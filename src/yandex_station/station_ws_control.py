@@ -10,6 +10,8 @@ import aiohttp
 from injector import inject
 
 from core.authorization.yandex_tokens import get_device_token
+from yandex_station.constants import SOCKET_RECONNECT_DELAY
+from yandex_station.exceptions import ClientNotRunningError
 from yandex_station.mdns_device_finder import DeviceFinder
 
 logger = logging.getLogger(__name__)
@@ -153,8 +155,11 @@ class YandexStationClient:
                         )
                         break
 
-                    logger.info("🔄 Переподключение через 5 секунд...")
-                    await asyncio.sleep(5)
+                    logger.info(
+                        f"🔄 Переподключение через"
+                        f"{SOCKET_RECONNECT_DELAY} секунд..."
+                    )
+                    await asyncio.sleep(SOCKET_RECONNECT_DELAY)
 
         except asyncio.CancelledError:
             logger.info("🛑 connect() прерван через CancelledError")
@@ -214,20 +219,26 @@ class YandexStationClient:
 
     async def stream_station_messages(self):
         """Постоянный поток сообщений от станции."""
-        async for message in self.websocket:
-            data = json.loads(message.data)
-            self.queue.append(data)
+        while self.running:
+            async for message in self.websocket:
+                data = json.loads(message.data)
+                self.queue.append(data)
 
-            # Если это ответ на команду, передаём в `Future`
-            request_id = data.get("requestId", None)
-            if request_id and request_id in self.waiters:
-                self.waiters[request_id].set_result(data)
-                del self.waiters[request_id]
+                # Если это ответ на команду, передаём в `Future`
+                request_id = data.get("requestId", None)
+                if request_id and request_id in self.waiters:
+                    self.waiters[request_id].set_result(data)
+                    del self.waiters[request_id]
+
+        await self.command_queue.put("stop")
+        logger.info("🛑 stream_station_messages завершен")
 
     async def command_producer_handler(self):
         """Обрабатывает команды из очереди и отправляет их на станцию."""
         while self.running:
             command = await self.command_queue.get()
+            if command == "stop":
+                break
 
             #  Блокировка гарантирует,
             #  что команды отправляются последовательно
@@ -236,13 +247,22 @@ class YandexStationClient:
                     logger.warning("❌ WebSocket закрыт, команда удалена")
                     continue  # Пропускаем команду, не отправляя её
 
-            await self.websocket.send_json(command)
-            logger.info(f"✅ Команда отправлена на станцию: {command}")
+                await self.websocket.send_json(command)
+                logger.info(f"✅ Команда отправлена на станцию: {command}")
+        logger.info("🛑 command_producer_handler завершен")
 
     async def send_command(self, command: dict) -> dict:
         """Отправляет команды в очередь для отправки на станцию
         и ожидает именованный uuid ответ от станции на команду.
         """
+        if not self.running:
+            logger.warning(
+                "⚠️ Попытка отправки команды при остановленном клиенте"
+            )
+            raise ClientNotRunningError(
+                "Клиент не активен, отправка команды невозможна"
+            )
+
         request_id = str(uuid.uuid4())
         future = asyncio.get_event_loop().create_future()
         self.waiters[request_id] = future
@@ -306,16 +326,6 @@ class YandexStationClient:
         # Отмена всех фоновых задач
         await self._cancel_tasks()
 
-        if self._connect_task:
-            self._connect_task.cancel()
-            try:
-                await self._connect_task
-            except asyncio.CancelledError:
-                logger.info("✅ connect() успешно отменён")
-            except Exception as e:
-                logger.error(f"❌ Ошибка при остановке connect(): {e}")
-            self._connect_task = None
-
         if self.websocket:
             try:
                 logger.info("🔄 Закрытие WebSocket-соединения...")
@@ -335,6 +345,18 @@ class YandexStationClient:
                 logger.error(f"❌ Ошибка при закрытии HTTP-сессии: {e}")
             finally:
                 self.session = None
+
+        if self._connect_task:
+            logger.info("🔄 Отмена задачи подключения к станции...")
+            self._connect_task.cancel()
+            try:
+                await self._connect_task
+            except asyncio.CancelledError:
+                logger.info("✅ Задача подключения к станции отменена")
+            except Exception as e:
+                logger.error(f"❌ Ошибка при остановке задачи подключения: {e}")
+            self._connect_task = None
+            logger.info("✅ Задача подключения к станции отменена")
 
     def _check_duplicate_tasks(self):
         """Проверка на повторяющиеся задачи"""
