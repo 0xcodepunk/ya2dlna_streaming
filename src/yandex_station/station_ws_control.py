@@ -469,7 +469,9 @@ class YandexStationClient:
                 del self.waiters[request_id]
                 count += 1
         if count:
-            logger.warning(f"❌ Завершено {count} зависших Future с ошибкой: {error}")
+            logger.warning(
+                f"❌ Завершено {count} зависших Future с ошибкой: {error}"
+            )
 
     def _check_duplicate_tasks(self):
         """Проверка на повторяющиеся задачи"""
