@@ -33,6 +33,9 @@ cd ya2dlna_streaming
 ```ini
 PYTHONPATH=src  # Путь к исходному коду
 
+# Режим отладки для логирования
+APP_DEBUG=False
+
 # API токен для Яндекс.Музыки
 APP_YA_MUSIC_TOKEN=your_token_here
 
