@@ -301,6 +301,7 @@ class YandexStationClient:
 
             except Exception as e:
                 logger.error(f"❌ Ошибка в stream_station_messages: {e}")
+                self._fail_all_pending_futures(e)
                 self.reconnect_required = True
                 self.running = False
                 break
@@ -412,6 +413,11 @@ class YandexStationClient:
         """Закрытие WebSocket-соединения и фоновых задач."""
         self.running = False
 
+        # Завершаем все зависшие Future
+        logger.info("🔄 Завершение всех зависших Future...")
+        self._fail_all_pending_futures(RuntimeError("🛑 Клиент закрыт"))
+        logger.info("✅ Все зависшие Future завершены")
+
         # Очищаем очередь команд, чтобы не отправлять их в закрытый WebSocket
         while not self.command_queue.empty():
             try:
@@ -454,6 +460,16 @@ class YandexStationClient:
                 logger.error(f"❌ Ошибка при остановке задачи подключения: {e}")
             self._connect_task = None
             logger.info("✅ Задача подключения к станции отменена")
+
+    def _fail_all_pending_futures(self, error: Exception):
+        count = 0
+        for request_id, (future, _) in list(self.waiters.items()):
+            if not future.done():
+                future.set_exception(error)
+                del self.waiters[request_id]
+                count += 1
+        if count:
+            logger.warning(f"❌ Завершено {count} зависших Future с ошибкой: {error}")
 
     def _check_duplicate_tasks(self):
         """Проверка на повторяющиеся задачи"""
