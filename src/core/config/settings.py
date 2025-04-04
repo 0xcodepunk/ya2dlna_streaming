@@ -34,5 +34,8 @@ class Settings(BaseSettings):
     # Ruark R5 settings
     ruark_pin: str
 
+    # Mode settings
+    debug: bool = False
+
 
 settings = Settings()

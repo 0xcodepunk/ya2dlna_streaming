@@ -55,9 +55,11 @@ class MainStreamManager:
         self._stream_state_running = True
 
         # Запуск WebSocket-клиента
+        logger.info("🔄 Запуск WebSocket клиента")
         await self._station_controls.start_ws_client()
-        # stream_task = asyncio.create_task(self.streaming())
+        logger.info("🎬 Запуск обёртки стриминга")
         stream_task = asyncio.create_task(self._wrap_streaming())
+        logger.info("✅ WebSocket клиент запущен")
         self._tasks.extend([stream_task])
 
     async def stop(self):
@@ -83,6 +85,7 @@ class MainStreamManager:
     async def streaming(self):
         """Основной поток управления стримингом"""
         try:
+            logger.info("📡 Поток streaming() стартовал")
             await self._prepare_devices()
 
             last_alice_state = await self._station_controls.get_alice_state()
@@ -194,6 +197,7 @@ class MainStreamManager:
                 )
 
                 last_alice_state = current_alice_state
+                logger.debug("💤 Цикл стриминга работает")
                 await asyncio.sleep(1.0)
 
         except asyncio.CancelledError:
@@ -218,8 +222,10 @@ class MainStreamManager:
                 logger.info(f"🔁 Перезапуск стриминга через "
                             f"{STREAMING_RESTART_DELAY} секунд...")
                 await asyncio.sleep(STREAMING_RESTART_DELAY)
+                logger.debug("🔄 Перезапуск потока после падения")
 
     async def _prepare_devices(self):
+        logger.info("🔧 Подготовка устройств к стримингу...")
         await asyncio.sleep(1)
         await self._station_controls.set_default_volume()
         await self._ruark_controls.get_session_id()

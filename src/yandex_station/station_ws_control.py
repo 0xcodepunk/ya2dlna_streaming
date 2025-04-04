@@ -5,6 +5,7 @@ import ssl
 import time
 import uuid
 from collections import deque
+from typing import Dict, Tuple
 
 import aiohttp
 from injector import inject
@@ -30,13 +31,12 @@ class YandexStationClient:
         self.device_finder = device_finder
         self.device_token = device_token
         self.queue = deque(maxlen=buffer_size)  # Очередь для сообщений станции
-        self.waiters: dict[str, asyncio.Future] = {}
+        self.waiters: Dict[str, Tuple[asyncio.Future, float]] = {}
         self.lock = asyncio.Lock()
         self.session: aiohttp.ClientSession = None
         self.websocket: aiohttp.ClientWebSocketResponse = None
         self.command_queue = asyncio.Queue()
         self.authenticated = False
-        self.device_token = None
         self.running = True
         self.reconnect_required = False
         self._connect_task: asyncio.Task | None = None
@@ -117,11 +117,15 @@ class YandexStationClient:
                         keep_alive_ws_task = asyncio.create_task(
                             self.keep_alive_ws_connection()
                         )
+                        cleanup_task = asyncio.create_task(
+                            self.clean_expired_futures()
+                        )
 
                         self.tasks = [
                             stream_status_task,
                             command_producer_task,
                             keep_alive_ws_task,
+                            cleanup_task,
                         ]
 
                         auth_success = await self.authenticate()
@@ -182,6 +186,25 @@ class YandexStationClient:
                 logger.error(f"❌ Ошибка при отправке пинга: {e}")
             await asyncio.sleep(10)
 
+    async def clean_expired_futures(self, timeout: float = 15) -> None:
+        """Удаляет зависшие Future из self.waiters"""
+        while self.running:
+            now = time.time()
+            expired = []
+
+            for request_id, (future, created_at) in list(self.waiters.items()):
+                if now - created_at > timeout and not future.done():
+                    future.set_exception(
+                        asyncio.TimeoutError("⏱ Застрявший Future очищен")
+                    )
+                    expired.append(request_id)
+
+            for request_id in expired:
+                del self.waiters[request_id]
+                logger.warning(f"🧹 Удалён зависший Future: {request_id}")
+
+            await asyncio.sleep(10)
+
     async def authenticate(self) -> bool:
         """Отправляет пинг и ожидает ответа для подтверждения авторизации."""
         try:
@@ -218,25 +241,86 @@ class YandexStationClient:
         await asyncio.sleep(1)
 
     async def stream_station_messages(self):
-        """Постоянный поток сообщений от станции."""
-        while self.running:
-            async for message in self.websocket:
-                data = json.loads(message.data)
-                self.queue.append(data)
+        """Постоянный поток сообщений от станции с защитой от зависания."""
+        logger.info("📥 Поток приёма сообщений от станции запущен")
 
-                # Если это ответ на команду, передаём в `Future`
-                request_id = data.get("requestId", None)
-                if request_id and request_id in self.waiters:
-                    self.waiters[request_id].set_result(data)
-                    del self.waiters[request_id]
+        while self.running:
+            if self.websocket.closed:
+                logger.warning("❌ WebSocket внезапно закрыт")
+                self.reconnect_required = True
+                self.running = False
+                break
+
+            try:
+                # Ждём сообщение от станции, не дольше 30 секунд
+                msg = await asyncio.wait_for(
+                    self.websocket.receive(),
+                    timeout=30
+                )
+
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    self.queue.append(data)
+                    logger.debug("📨 Получено сообщение от станции")
+
+                    # Если это ответ на команду, передаём в Future
+                    request_id = data.get("requestId")
+                    if request_id and request_id in self.waiters:
+                        self.waiters[request_id][0].set_result(data)
+                        del self.waiters[request_id]
+
+                elif msg.type == aiohttp.WSMsgType.CLOSING:
+                    logger.warning("❌ WebSocket начал закрываться на станции")
+                    self.reconnect_required = True
+                    self.running = False
+                    break
+
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                    logger.warning("❌ WebSocket закрыт станцией")
+                    self.reconnect_required = True
+                    self.running = False
+                    break
+
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error("❌ Ошибка WebSocket-соединения")
+                    self.reconnect_required = True
+                    self.running = False
+                    break
+
+                else:
+                    logger.warning(f"⚠️ Неизвестный тип сообщения: {msg.type}")
+
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "📭 Нет сообщений от станции более 30 секунд "
+                    "— считаем соединение зависшим"
+                )
+                self.reconnect_required = True
+                self.running = False
+                break
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка в stream_station_messages: {e}")
+                self.reconnect_required = True
+                self.running = False
+                break
 
         await self.command_queue.put("stop")
         logger.info("🛑 stream_station_messages завершен")
 
     async def command_producer_handler(self):
         """Обрабатывает команды из очереди и отправляет их на станцию."""
+        logger.info("📤 Поток отправки команд на станцию запущен")
         while self.running:
-            command = await self.command_queue.get()
+            try:
+                command = await asyncio.wait_for(
+                    self.command_queue.get(),
+                    timeout=30
+                )
+            except asyncio.TimeoutError:
+                logger.debug("⏱ Очередь пуста, ждём новые команды...")
+                continue
+
             if command == "stop":
                 break
 
@@ -247,8 +331,18 @@ class YandexStationClient:
                     logger.warning("❌ WebSocket закрыт, команда удалена")
                     continue  # Пропускаем команду, не отправляя её
 
-                await self.websocket.send_json(command)
-                logger.info(f"✅ Команда отправлена на станцию: {command}")
+                try:
+                    await asyncio.wait_for(
+                        self.websocket.send_json(command),
+                        timeout=5
+                    )
+                    logger.info(f"✅ Команда отправлена на станцию: {command}")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "⚠️ Таймаут при отправке команды через WebSocket"
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при отправке команды: {e}")
         logger.info("🛑 command_producer_handler завершен")
 
     async def send_command(self, command: dict) -> dict:
@@ -265,7 +359,7 @@ class YandexStationClient:
 
         request_id = str(uuid.uuid4())
         future = asyncio.get_event_loop().create_future()
-        self.waiters[request_id] = future
+        self.waiters[request_id] = (future, time.time())
 
         command_payload = {
             "conversationToken": self.device_token,
@@ -320,8 +414,11 @@ class YandexStationClient:
 
         # Очищаем очередь команд, чтобы не отправлять их в закрытый WebSocket
         while not self.command_queue.empty():
-            self.command_queue.get_nowait()
-            self.command_queue.task_done()
+            try:
+                self.command_queue.get_nowait()
+                self.command_queue.task_done()
+            except asyncio.QueueEmpty:
+                break
 
         # Отмена всех фоновых задач
         await self._cancel_tasks()

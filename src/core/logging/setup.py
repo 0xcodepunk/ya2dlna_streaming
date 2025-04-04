@@ -2,6 +2,8 @@ import logging
 import os
 from logging.config import dictConfig
 
+from core.config.settings import settings
+
 # Определяем путь к каталогу logs и создаем его, если он не существует
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -29,7 +31,7 @@ def setup_logging():
             "console": {
                 "class": "logging.StreamHandler",
                 "formatter": "detailed",
-                "level": "INFO"
+                "level": "DEBUG" if settings.debug else "INFO"
             },
             "file": {
                 "class": "logging.handlers.RotatingFileHandler",
@@ -42,12 +44,12 @@ def setup_logging():
         },
         "root": {
             "handlers": ["console", "file"],
-            "level": "INFO"
+            "level": "DEBUG" if settings.debug else "INFO"
         },
         "loggers": {
             "ruark_audio_system": {
                 "handlers": ["console", "file"],
-                "level": "DEBUG",
+                "level": "INFO",
                 "propagate": False
             }
         }

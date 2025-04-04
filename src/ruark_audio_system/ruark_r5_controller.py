@@ -197,13 +197,19 @@ class RuarkR5Controller:
             InstanceID=0
         )
 
-    async def is_playing(self) -> bool:
-        """Проверка, воспроизводится ли что-либо"""
-        ruark_state = await self.get_transport_info()
-        play_state = ruark_state.get("CurrentTransportState")
-        if play_state == "PLAYING":
-            return True
-        return False
+    async def is_playing(self, timeout: float = 5.0) -> bool:
+        """Проверка, воспроизводится ли что-либо, с защитой по таймауту"""
+        try:
+            ruark_state = await asyncio.wait_for(
+                self.get_transport_info(), timeout=timeout
+            )
+            return ruark_state.get("CurrentTransportState") == "PLAYING"
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Ruark: timeout при get_transport_info()")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке is_playing: {e}")
+            return False
 
     async def set_play_mode(self, mode: PlayModeType) -> None:
         """Установка режима воспроизведения"""
