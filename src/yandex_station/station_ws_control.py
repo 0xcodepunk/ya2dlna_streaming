@@ -462,6 +462,7 @@ class YandexStationClient:
             logger.info("✅ Задача подключения к станции отменена")
 
     def _fail_all_pending_futures(self, error: Exception):
+        """Завершает все зависшие Future"""
         count = 0
         for request_id, (future, _) in list(self.waiters.items()):
             if not future.done():
