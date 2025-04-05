@@ -269,26 +269,34 @@ class YandexStationClient:
                         self.waiters[request_id][0].set_result(data)
                         del self.waiters[request_id]
 
+                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    logger.warning(
+                        "❌ WebSocket закрывается на стороне станции (CLOSE)"
+                    )
+                    self.reconnect_required = True
+                    self.running = False
+                    break
                 elif msg.type == aiohttp.WSMsgType.CLOSING:
-                    logger.warning("❌ WebSocket начал закрываться на станции")
+                    logger.warning("❌ WebSocket начал закрываться (CLOSING)")
                     self.reconnect_required = True
                     self.running = False
                     break
-
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    logger.warning("❌ WebSocket закрыт станцией")
+                    logger.warning("❌ WebSocket закрыт станцией (CLOSED)")
                     self.reconnect_required = True
                     self.running = False
                     break
-
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    logger.error("❌ Ошибка WebSocket-соединения")
+                    logger.error("❌ Ошибка WebSocket-соединения (ERROR)")
                     self.reconnect_required = True
                     self.running = False
                     break
 
                 else:
-                    logger.warning(f"⚠️ Неизвестный тип сообщения: {msg.type}")
+                    logger.warning(
+                        f"⚠️ Необработанный тип сообщения WebSocket: "
+                        f"{msg.type} — {msg}"
+                    )
 
             except asyncio.TimeoutError:
                 logger.warning(
