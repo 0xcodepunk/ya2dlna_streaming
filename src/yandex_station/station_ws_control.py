@@ -261,7 +261,9 @@ class YandexStationClient:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
                     self.queue.append(data)
-                    logger.debug("📨 Получено сообщение от станции")
+                    logger.debug(
+                        f"📨 Получено сообщение от станции: {data}"
+                    )
 
                     # Если это ответ на команду, передаём в Future
                     request_id = data.get("requestId")
