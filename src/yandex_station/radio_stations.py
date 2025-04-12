@@ -1,4 +1,7 @@
 import enum
+from logging import getLogger
+
+logger = getLogger(__name__)
 
 
 class RadioStations(enum.Enum):
@@ -25,4 +28,5 @@ async def get_radio_stations(station_name: str):
         stream_url = RadioStations[station_name].value
         return stream_url
     else:
+        logger.error(f"❌ Неизвестная радиостанция: {station_name}")
         return None
