@@ -89,6 +89,7 @@ class YandexStationControls:
             if player_state:
                 return Track(
                     id=player_state.get("id", 0),
+                    type=player_state.get("type", ""),
                     title=player_state.get("title", ""),
                     artist=player_state.get("subtitle", ""),
                     duration=player_state.get("duration", 0),

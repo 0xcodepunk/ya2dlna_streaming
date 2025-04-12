@@ -10,6 +10,7 @@ from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (ALICE_ACTIVE_STATES, RUARK_IDLE_VOLUME,
                                       STREAMING_RESTART_DELAY)
 from yandex_station.models import Track
+from yandex_station.radio_stations import get_radio_stations
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
 
@@ -93,6 +94,7 @@ class MainStreamManager:
                 id="0",
                 artist="",
                 title="",
+                type="",
                 duration=0,
                 progress=0,
                 playing=False
@@ -135,11 +137,15 @@ class MainStreamManager:
                         )
 
                     if last_track.id != track.id and track.playing:
-                        track_url = (
-                            await self._yandex_music_api.get_file_info(
-                                track.id
+                        logger.info(f"🎵 Трек: {track.id}")
+                        track_url = await get_radio_stations(track.id)
+                        if not track_url:
+                            track_url = (
+                                await self._yandex_music_api.get_file_info(
+                                    track.id
+                                )
                             )
-                        )
+
                         await self._send_track_to_stream_server(track_url)
                         last_track = track
 
@@ -177,6 +183,7 @@ class MainStreamManager:
                     if (
                         current_volume > 0
                         and track.duration - track.progress > 10
+                        or track.type == "FmRadio"
                         and track.playing
                     ):
                         await self._station_controls.fade_out_alice_volume()
@@ -187,6 +194,7 @@ class MainStreamManager:
                     track.duration - track.progress < 1
                     and current_alice_state == "IDLE"
                     and track.playing
+                    and track.type != "FmRadio"
                 ):
                     await self._station_controls.unmute()
 
@@ -270,7 +278,8 @@ class MainStreamManager:
     def _log_current_track(self, track: Track, state: str, last_state: str):
         logger.info(
             f"🎵 Сейчас играет: {track.id} - {track.artist} - "
-            f"{track.title} - {track.progress}/{track.duration}, "
+            f"{track.type} - {track.title} - "
+            f"{track.progress}/{track.duration}, "
             f"статус Алисы: {state}, "
             f"предыдущий статус Алисы: {last_state}, "
             f"проигрывание: {track.playing}"
