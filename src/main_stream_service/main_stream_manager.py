@@ -255,7 +255,8 @@ class MainStreamManager:
         self._ruark_volume = await self._ruark_controls.get_volume()
 
     async def _send_track_to_stream_server(
-            self, track_url: str,
+            self,
+            track_url: str,
             is_live: bool = False
     ):
         """Отправляет ссылку на трек на стрим сервер"""
@@ -271,7 +272,7 @@ class MainStreamManager:
                     f"{settings.local_server_port_dlna}/set_stream",
                     params={
                         "yandex_url": track_url,
-                        "is_live": is_live
+                        "is_live": str(is_live).lower()
                     }
                 ) as resp:
                     response = await resp.json()
