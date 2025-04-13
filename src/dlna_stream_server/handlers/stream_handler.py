@@ -90,9 +90,9 @@ class StreamHandler:
             is_live: bool = False
     ):
         """Запускает потоковую передачу через FFmpeg."""
-        await self.stop_ffmpeg()  # Останавливаем старый процесс
         self.last_stream_url = stream_url
         self.is_live_stream = is_live
+        await self.stop_ffmpeg()  # Останавливаем старый процесс
         logger.info(f"🎥 Запуск потоковой передачи с {stream_url}")
 
         self._ffmpeg_process = await asyncio.create_subprocess_exec(

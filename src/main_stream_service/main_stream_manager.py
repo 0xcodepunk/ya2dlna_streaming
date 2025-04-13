@@ -138,20 +138,27 @@ class MainStreamManager:
 
                     if last_track.id != track.id and track.playing:
                         logger.info(f"🎵 Трек: {track.id}")
-                        track_url = await get_radio_stations(track.id)
-                        if not track_url:
-                            track_url = (
-                                await self._yandex_music_api.get_file_info(
-                                    track.id
-                                )
-                            )
                         if track.type == "FmRadio":
+                            track_url = await get_radio_stations(track.id)
+                            if not track_url:
+                                logger.warning(
+                                    f"❌ Не удалось получить URL радиостанции "
+                                    f"{track.id}"
+                                )
+                                continue
                             await self._send_track_to_stream_server(
                                 track_url,
                                 is_live=True
                             )
                         else:
-                            await self._send_track_to_stream_server(track_url)
+                            track_url = (
+                                await self._yandex_music_api.get_file_info(
+                                    track.id
+                                )
+                            )
+                            await self._send_track_to_stream_server(
+                                track_url
+                            )
                         last_track = track
 
                     if speak_count > 0 and track.playing:
