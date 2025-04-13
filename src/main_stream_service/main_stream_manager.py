@@ -145,8 +145,13 @@ class MainStreamManager:
                                     track.id
                                 )
                             )
-
-                        await self._send_track_to_stream_server(track_url)
+                        if track.type == "FmRadio":
+                            await self._send_track_to_stream_server(
+                                track_url,
+                                is_live=True
+                            )
+                        else:
+                            await self._send_track_to_stream_server(track_url)
                         last_track = track
 
                     if speak_count > 0 and track.playing:
@@ -168,7 +173,15 @@ class MainStreamManager:
                                 "⚠️ Ruark так и не начал играть, "
                                 "перезапуск трека на стрим сервере"
                             )
-                            await self._send_track_to_stream_server(track_url)
+                            if track.type == "FmRadio":
+                                await self._send_track_to_stream_server(
+                                    track_url,
+                                    is_live=True
+                                )
+                            else:
+                                await self._send_track_to_stream_server(
+                                    track_url
+                                )
                             await self._station_controls.\
                                 fade_out_alice_volume()
                             speak_count = 0
@@ -241,16 +254,25 @@ class MainStreamManager:
             await self._ruark_controls.turn_power_on()
         self._ruark_volume = await self._ruark_controls.get_volume()
 
-    async def _send_track_to_stream_server(self, track_url: str):
+    async def _send_track_to_stream_server(
+            self, track_url: str,
+            is_live: bool = False
+    ):
         """Отправляет ссылку на трек на стрим сервер"""
 
         try:
             async with aiohttp.ClientSession() as session:
-                logger.info(f"🎵 Отправляем трек на стрим сервер: {track_url}")
+                logger.info(
+                    f"🎵 Отправляем трек на стрим сервер: "
+                    f"{track_url} | live: {is_live}"
+                )
                 async with session.post(
                     f"http://{self._stream_server_url}:"
                     f"{settings.local_server_port_dlna}/set_stream",
-                    params={"yandex_url": track_url}
+                    params={
+                        "yandex_url": track_url,
+                        "is_live": is_live
+                    }
                 ) as resp:
                     response = await resp.json()
                     logger.debug(f"Ответ от Ruark API: {response}")

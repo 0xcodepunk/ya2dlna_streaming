@@ -16,11 +16,15 @@ stream_handler = di_container.get(StreamHandler)
 
 
 @router.post("/set_stream")
-async def set_stream(yandex_url: str):
+async def set_stream(yandex_url: str, is_live: bool = False):
     """Принимает URL трека и запускает потоковую передачу на Ruark."""
     logger.info(f"📥 Запуск нового потока с {yandex_url}")
-    asyncio.create_task(stream_handler.play_stream(yandex_url))
-    return {"message": "Стрим запущен", "stream_url": yandex_url}
+    asyncio.create_task(stream_handler.play_stream(yandex_url, is_live=False))
+    return {
+        "message": "Стрим запущен",
+        "stream_url": yandex_url,
+        "is_live": is_live
+    }
 
 
 @router.get("/live_stream.mp3")
