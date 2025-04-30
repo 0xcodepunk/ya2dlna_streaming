@@ -119,7 +119,19 @@ class StreamHandler:
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка в генераторе потока: {e}")
 
-        return StreamingResponse(generate(), media_type="audio/mpeg")
+        return StreamingResponse(
+            generate(),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Type": "audio/mpeg",
+                "Connection": "keep-alive",
+                "Transfer-Encoding": "chunked",
+                "icy-name": "YA2DLNA Station",
+                "icy-br": "320",
+                "icy-url": "http://ya2dlna.local/",
+                "icy-metaint": "0",
+            }
+        )
 
     async def play_stream(self, yandex_url: str):
         """Запускает потоковую трансляцию и передает её на Ruark."""
