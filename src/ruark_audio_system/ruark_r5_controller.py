@@ -25,36 +25,35 @@ class RuarkR5Controller:
 
     def __init__(self, device_name: str = "Ruark R5") -> None:
         """Инициализация и поиск устройства Ruark R5 в сети"""
+        self.refresh_device()
+        self.print_available_services()
+
+    def refresh_device(self) -> None:
+        """Обновление устройства"""
+        logger.info("🔄 Обновление устройства")
         self.device: Optional[upnpclient.Device] = self.find_device(
-            device_name
+            self.device.friendly_name
         )
         if not self.device:
-            logger.warning(f"⚠ Устройство '{device_name}' не найдено в сети!")
+            logger.warning(f"⚠ Устройство '{self.device.friendly_name}' "
+                           f"не найдено в сети!")
             return
 
         self.ip = self.get_device_ip()
-        logger.info(f"IP-адрес устройства: {self.ip}")
-
-        # Проверка всех доступных сервисов
         self.services: Dict[str, Any] = {
             service.service_type: service for service in self.device.services
         }
-
-        self.av_transport: Any = self.services.get(
+        self.av_transport = self.services.get(
             "urn:schemas-upnp-org:service:AVTransport:1"
         )
-        self.connection_manager: Any = self.services.get(
+        self.connection_manager = self.services.get(
             "urn:schemas-upnp-org:service:ConnectionManager:1"
         )
-        self.rendering_control: Any = self.services.get(
+        self.rendering_control = self.services.get(
             "urn:schemas-upnp-org:service:RenderingControl:1"
         )
-
-        logger.info(
-            f"✅ Успешно подключено к {self.device.friendly_name} "
-            f"({self.device.location})"
-        )
-        self.print_available_services()
+        logger.info(f"Устройство обновлено: {self.device.friendly_name} "
+                    f"({self.device.location})")
 
     def find_device(self, device_name: str) -> Optional[upnpclient.Device]:
         """Находит устройство по имени"""
