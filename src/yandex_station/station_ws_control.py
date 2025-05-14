@@ -172,20 +172,37 @@ class YandexStationClient:
 
     async def keep_alive_ws_connection(self):
         """Поддерживает WebSocket-соединение активным"""
-        while self.running:
-            try:
-                response = await self.send_command({"command": "ping"})
-                if response.get("error") == "Timeout":
-                    logger.warning(
-                        "❌ Ping timeout. Инициируем переподключение."
+        try:
+            while self.running:
+                await asyncio.sleep(10)
+
+                if not self.running:
+                    logger.debug(
+                        "🛑 Клиент остановлен — выходим из "
+                        "keep_alive_ws_connection"
                     )
-                    self.reconnect_required = True
-                    self.running = False
                     return
 
-            except Exception as e:
-                logger.error(f"❌ Ошибка при отправке пинга: {e}")
-            await asyncio.sleep(10)
+                try:
+                    response = await self.send_command({"command": "ping"})
+                    if response.get("error") == "Timeout":
+                        logger.warning(
+                            "❌ Ping timeout. Инициируем переподключение."
+                        )
+                        self.reconnect_required = True
+                        self.running = False
+                        return
+                except ClientNotRunningError:
+                    logger.debug(
+                        "⚠️ Попытка ping при остановленном клиенте — "
+                        "прерывание"
+                    )
+                    return
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при отправке пинга: {e}")
+
+        except asyncio.CancelledError:
+            logger.info("🛑 Задача keep_alive_ws_connection отменена")
 
     async def clean_expired_futures(self, timeout: float = 15) -> None:
         """Удаляет зависшие Future из self.waiters"""

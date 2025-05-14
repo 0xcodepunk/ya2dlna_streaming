@@ -25,6 +25,7 @@ class RuarkR5Controller:
 
     def __init__(self, device_name: str = "Ruark R5") -> None:
         """Инициализация и поиск устройства Ruark R5 в сети"""
+        self.device_name = device_name
         self.refresh_device()
         self.print_available_services()
 
@@ -32,7 +33,7 @@ class RuarkR5Controller:
         """Обновление устройства"""
         logger.info("🔄 Обновление устройства")
         self.device: Optional[upnpclient.Device] = self.find_device(
-            self.device.friendly_name
+            device_name=self.device_name
         )
         if not self.device:
             logger.warning(f"⚠ Устройство '{self.device.friendly_name}' "
