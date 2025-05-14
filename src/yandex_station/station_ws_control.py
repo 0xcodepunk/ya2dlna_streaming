@@ -85,7 +85,8 @@ class YandexStationClient:
                             "⚠️ Обнаружено старое WebSocket-соединение, "
                             "закрываем..."
                         )
-                        await self.close()
+                        await self.websocket.close()
+                        self.websocket = None
 
                     if self.session:
                         logger.info(
@@ -425,6 +426,8 @@ class YandexStationClient:
         logger.info("🔄 Завершение всех зависших Future...")
         self._fail_all_pending_futures(RuntimeError("🛑 Клиент закрыт"))
         logger.info("✅ Все зависшие Future завершены")
+        self.authenticated = False
+        logger.info("🔒 Флаг авторизации сброшен")
 
         # Очищаем очередь команд, чтобы не отправлять их в закрытый WebSocket
         while not self.command_queue.empty():
