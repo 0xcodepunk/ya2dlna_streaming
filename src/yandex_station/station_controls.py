@@ -1,10 +1,12 @@
 import asyncio
+import json
 from logging import getLogger
 
 from injector import inject
 
 from yandex_station.constants import ALICE_ACTIVE_STATES, FADE_TIME
 from yandex_station.models import Track
+from yandex_station.protobuf import Protobuf
 from yandex_station.station_ws_control import YandexStationClient
 
 logger = getLogger(__name__)
@@ -14,11 +16,17 @@ class YandexStationControls:
     """Класс управления станцией через WebSocket"""
 
     _ws_client: YandexStationClient
+    _protobuf: Protobuf
     _volume: float
 
     @inject
-    def __init__(self, ws_client: YandexStationClient):
+    def __init__(
+        self,
+        ws_client: YandexStationClient,
+        protobuf: Protobuf,
+    ):
         self._ws_client = ws_client
+        self._protobuf = protobuf
         self._volume = 0
         self._was_muted = False
 
@@ -59,6 +67,23 @@ class YandexStationControls:
                 f"❌ Ошибка при получении текущего состояния станции: {e}"
             )
 
+    async def get_radio_url(self):
+        """Получение URL радиостанции"""
+        try:
+            data = await self._ws_client.get_latest_message()
+            state = self._protobuf.loads(data["extra"]["appState"])
+            metaw = json.loads(state[6][3][7])
+            item = self._protobuf.loads(metaw["scenario_meta"]["queue_item"])
+            url = item[7][1].decode()
+            return url
+
+        except Exception as e:
+            logger.error(
+                f"❌ Ошибка при получении текущего состояния станции через "
+                f"Protobuf: {e}"
+            )
+            return None
+
     async def get_alice_state(self):
         """Получение состояния Алиса"""
         try:
@@ -85,11 +110,12 @@ class YandexStationControls:
         """Получение текущего трека"""
         try:
             player_state = await self.get_player_status()
-            # logger.info(f"🎵 Состояние плеера: {player_state}")
+            # logger.info(f"🎵 Состояние плеера: {player_state}") # TODO: remove
             if player_state:
                 return Track(
                     id=player_state.get("id", 0),
                     title=player_state.get("title", ""),
+                    type=player_state.get("type", ""),
                     artist=player_state.get("subtitle", ""),
                     duration=player_state.get("duration", 0),
                     progress=player_state.get("progress", 0),

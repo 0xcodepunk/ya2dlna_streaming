@@ -7,6 +7,9 @@ from fastapi.responses import StreamingResponse
 from core.config.settings import settings
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
+from .constants import FFMPEG_AAC_PARAMS, FFMPEG_MP3_PARAMS
+from .utils import get_latest_index_url
+
 logger = getLogger(__name__)
 
 
@@ -17,6 +20,8 @@ class StreamHandler:
         self._ffmpeg_process: asyncio.subprocess.Process | None = None
         self._ruark_controls = ruark_controls
         self._current_url: str | None = None
+        self._current_radio: bool = False
+        self._current_ffmpeg_params: list[str] | None = None
         self._monitor_task: asyncio.Task | None = None
         self._restart_attempts = 0
         self._max_restart_attempts = 3
@@ -125,11 +130,14 @@ class StreamHandler:
             )
             await asyncio.sleep(delay)
 
-            await self.start_ffmpeg_stream(self._current_url)
+            await self.start_ffmpeg_stream(
+                self._current_url, self._current_radio
+            )
 
             track_url = (
                 f"http://{settings.local_server_host}:"
                 f"{settings.local_server_port_dlna}/live_stream.mp3"
+                f"?radio={str(self._current_radio).lower()}"
             )
             await self.execute_with_lock(
                 self._ruark_controls.set_av_transport_uri,
@@ -158,6 +166,7 @@ class StreamHandler:
             proc = self._ffmpeg_process
             self._ffmpeg_process = None  # избегаем гонки
             self._current_url = None
+            self._current_radio = False
 
             logger.info("⏹ Останавливаем текущий поток FFmpeg...")
 
@@ -196,36 +205,29 @@ class StreamHandler:
             except Exception as e:
                 logger.exception(f"❌ Ошибка при остановке FFmpeg: {e}")
 
-    async def start_ffmpeg_stream(self, yandex_url: str):
+    async def start_ffmpeg_stream(self, yandex_url: str, radio: bool = False):
         """Запускает потоковую передачу через FFmpeg."""
         await self.stop_ffmpeg()  # Останавливаем старый процесс
-
+        if self._current_ffmpeg_params:
+            self._current_ffmpeg_params = None
         logger.info(f"🎥 Запуск потоковой передачи с {yandex_url}")
+        if radio:
+            yandex_url = await get_latest_index_url(yandex_url)
+            self._current_ffmpeg_params = self._get_ffmpeg_params(codec="aac")
+        else:
+            self._current_ffmpeg_params = self._get_ffmpeg_params(codec="mp3")
         self._current_url = yandex_url
+        self._current_radio = radio
 
         # Улучшенные параметры для стабильной работы с временными ссылками
+        ffmpeg_params = [
+            param.format(yandex_url=yandex_url)
+            if isinstance(param, str) and '{yandex_url}' in param
+            else param
+            for param in self._current_ffmpeg_params
+        ]
         self._ffmpeg_process = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            # Входные параметры
-            "-re",  # Читаем файл с реальной скоростью
-            "-user_agent",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-            "-headers", "Accept: */*",
-            "-multiple_requests", "1",
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "2",
-            "-reconnect_at_eof", "1",
-            "-timeout", "10000000",
-            "-i", yandex_url,
-            # Выходные параметры
-            "-acodec", "libmp3lame",
-            "-b:a", "320k",
-            "-f", "mp3",
-            "-avoid_negative_ts", "make_zero",
-            "-fflags", "+genpts",
-            "-max_muxing_queue_size", "1024",
-            "pipe:1",
+            *ffmpeg_params,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -237,7 +239,7 @@ class StreamHandler:
             self._monitor_ffmpeg_process()
         )
 
-    async def stream_audio(self):
+    async def stream_audio(self, radio: bool = False):
         if not self._ffmpeg_process:
             raise HTTPException(status_code=404, detail="Поток не запущен")
 
@@ -251,9 +253,15 @@ class StreamHandler:
                 while True:
                     chunk = await proc.stdout.read(4096)
                     if not chunk:
-                        logger.info("📡 Конец потока данных от FFmpeg")
-                        break
+                        logger.warning(
+                            "📭 Поток данных пуст — отправляем keepalive-байт"
+                        )
+                        yield b"\0"  # посылаем нулевой байт, чтобы Ruark не думал, что всё зависло  # noqa: E501
+                        await asyncio.sleep(1.5)
+                        continue
+
                     yield chunk
+
             except asyncio.CancelledError:
                 logger.info("🔌 Клиент отключился от стрима")
                 # Не останавливаем FFmpeg при отключении клиента
@@ -261,9 +269,24 @@ class StreamHandler:
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка в генераторе потока: {e}")
 
-        return StreamingResponse(generate(), media_type="audio/mpeg")
+        media_type = "audio/mpeg" if not radio else "audio/aac"
+        response_headers = {
+            "Content-Type": "audio/mpeg" if not radio else "audio/aac",
+            "Accept-Ranges": "bytes",
+            "Connection": "keep-alive",
+        }
+        logger.info(
+            f"🎧 Отправляем стрим с типом {media_type} и заголовками "
+            f"{response_headers}"
+        )
 
-    async def play_stream(self, yandex_url: str):
+        return StreamingResponse(
+            generate(),
+            media_type=media_type,
+            headers=response_headers
+        )
+
+    async def play_stream(self, yandex_url: str, radio: bool = False):
         """Запускает потоковую трансляцию и передает её на Ruark."""
         logger.info(f"🎶 Начинаем потоковое воспроизведение {yandex_url}")
 
@@ -272,10 +295,11 @@ class StreamHandler:
 
         try:
             # Запускаем потоковую передачу
-            await self.start_ffmpeg_stream(yandex_url)
+            await self.start_ffmpeg_stream(yandex_url, radio)
             track_url = (
                 f"http://{settings.local_server_host}:"
                 f"{settings.local_server_port_dlna}/live_stream.mp3"
+                f"?radio={str(radio).lower()}"
             )
             logger.info(f"📡 Поток доступен по URL: {track_url}")
 
@@ -293,3 +317,11 @@ class StreamHandler:
             logger.exception(f"❌ Ошибка при запуске потока: {e}")
             await self.stop_ffmpeg()
             raise
+
+    def _get_ffmpeg_params(self, codec: str):
+        if codec == "mp3":
+            return FFMPEG_MP3_PARAMS
+        elif codec == "aac":
+            return FFMPEG_AAC_PARAMS
+        else:
+            raise ValueError(f"Неизвестный кодек {codec}")

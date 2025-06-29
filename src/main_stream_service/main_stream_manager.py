@@ -91,6 +91,7 @@ class MainStreamManager:
             last_alice_state = await self._station_controls.get_alice_state()
             last_track = Track(
                 id="0",
+                type="",
                 artist="",
                 title="",
                 duration=0,
@@ -135,12 +136,21 @@ class MainStreamManager:
                         )
 
                     if last_track.id != track.id and track.playing:
-                        track_url = (
-                            await self._yandex_music_api.get_file_info(
-                                track.id
+                        if track.type == "FmRadio":
+                            track_url = (
+                                await self._station_controls.get_radio_url()
                             )
+                            logger.info(f"🎵 URL радиостанции: {track_url}")
+                        else:
+                            track_url = (
+                                await self._yandex_music_api.get_file_info(
+                                    track.id
+                                )
+                            )
+                        await self._send_track_to_stream_server(
+                            track_url,
+                            radio=True if track.type == "FmRadio" else False
                         )
-                        await self._send_track_to_stream_server(track_url)
                         last_track = track
 
                     if speak_count > 0 and track.playing:
@@ -175,10 +185,11 @@ class MainStreamManager:
                     current_volume = await self._station_controls.get_volume()
 
                     if (
-                        current_volume > 0
-                        and track.duration - track.progress > 10
-                        and track.playing
-                    ):
+                        (current_volume > 0
+                         and track.duration - track.progress > 10
+                         and track.type != "FmRadio")
+                        or (track.type == "FmRadio" and track.playing)
+                    ) and track.playing:
                         await self._station_controls.fade_out_alice_volume()
 
                     volume_set_count = 0
@@ -187,6 +198,7 @@ class MainStreamManager:
                     track.duration - track.progress < 1
                     and current_alice_state == "IDLE"
                     and track.playing
+                    and track.type != "FmRadio"
                 ):
                     await self._station_controls.unmute()
 
@@ -233,7 +245,11 @@ class MainStreamManager:
             await self._ruark_controls.turn_power_on()
         self._ruark_volume = await self._ruark_controls.get_volume()
 
-    async def _send_track_to_stream_server(self, track_url: str):
+    async def _send_track_to_stream_server(
+            self,
+            track_url: str,
+            radio: bool = False
+    ):
         """Отправляет ссылку на трек на стрим сервер"""
 
         try:
@@ -242,7 +258,10 @@ class MainStreamManager:
                 async with session.post(
                     f"http://{self._stream_server_url}:"
                     f"{settings.local_server_port_dlna}/set_stream",
-                    params={"yandex_url": track_url}
+                    params={
+                        "yandex_url": track_url,
+                        "radio": str(radio).lower()
+                    }
                 ) as resp:
                     response = await resp.json()
                     logger.debug(f"Ответ от Ruark API: {response}")

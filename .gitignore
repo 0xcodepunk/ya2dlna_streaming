@@ -149,6 +149,10 @@ cache/
 #  IDE
 .vscode/
 
+#  Temporary files
+temp*
+**/temp*
+
 # PyInstaller
 ya2dlna_streaming
 ya2dlna_streaming.spec
