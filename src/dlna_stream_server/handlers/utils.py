@@ -10,11 +10,13 @@ logger = getLogger(__name__)
 
 async def get_latest_index_url(master_url: str) -> str:
     """Получает последний index-*.m3u8 из мастер-плейлиста."""
+    logger.info(
+        f"🔍 Получаем последний index-*.m3u8 из мастер-плейлиста: {master_url}"
+    )
     async with aiohttp.ClientSession() as client:
         response = await client.get(master_url)
         response.raise_for_status()
-
-    response_string = await response.text()
+        response_string = await response.text()
     pattern = r'(/kal/[^/]+/[^/]+/index-[\w\d\-]+\.m3u8\?[^\s]*)'
     m = re.search(pattern, response_string)
     if not m:

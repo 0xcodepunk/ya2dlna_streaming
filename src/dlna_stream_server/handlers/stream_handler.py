@@ -17,6 +17,7 @@ logger = getLogger(__name__)
 class StreamHandler:
     """Класс для управления потоковой передачей и воспроизведением на Ruark."""
     def __init__(self, ruark_controls: RuarkR5Controller):
+        self._radio_url: str | None = None
         self._ruark_lock = asyncio.Lock()
         self._ffmpeg_process: asyncio.subprocess.Process | None = None
         self._ruark_controls = ruark_controls
@@ -26,6 +27,8 @@ class StreamHandler:
         self._monitor_task: asyncio.Task | None = None
         self._restart_attempts = 0
         self._max_restart_attempts = 3
+        self._restart_task: asyncio.Task | None = None
+        self._is_restarting = False
 
     async def execute_with_lock(self, func, *args, **kwargs):
         """Выполняет вызов UPnP-команды в Ruark с блокировкой."""
@@ -122,6 +125,10 @@ class StreamHandler:
 
     async def _restart_stream(self):
         """Перезапуск потока с текущим URL."""
+        if self._is_restarting:
+            logger.info("⏸️ Перезапуск уже выполняется, пропускаем")
+            return
+
         if not self._current_url:
             logger.warning("⚠️ Нет сохраненного URL для перезапуска")
             return
@@ -133,6 +140,7 @@ class StreamHandler:
             )
             return
 
+        self._is_restarting = True
         self._restart_attempts += 1
         delay = min(2 ** self._restart_attempts, 30)  # Прогрессивная задержка
 
@@ -144,9 +152,15 @@ class StreamHandler:
             )
             await asyncio.sleep(delay)
 
-            await self.start_ffmpeg_stream(
-                self._current_url, self._current_radio
-            )
+            if self._current_radio:
+                # При перезапуске передаем исходный мастер-плейлист
+                await self.start_ffmpeg_stream(
+                    self._radio_url, self._current_radio
+                )
+            else:
+                await self.start_ffmpeg_stream(
+                    self._current_url, self._current_radio
+                )
 
             track_url = (
                 f"http://{settings.local_server_host}:"
@@ -165,9 +179,22 @@ class StreamHandler:
 
         except Exception as e:
             logger.exception(f"❌ Ошибка при перезапуске потока: {e}")
+        finally:
+            self._is_restarting = False
 
     async def stop_ffmpeg(self):
         """Останавливает текущий процесс FFmpeg, если он запущен."""
+        # Отменяем задачу перезапуска если она выполняется
+        if self._restart_task:
+            self._restart_task.cancel()
+            try:
+                await self._restart_task
+            except asyncio.CancelledError:
+                pass
+            self._restart_task = None
+
+        self._is_restarting = False
+
         if self._monitor_task:
             self._monitor_task.cancel()
             try:
@@ -181,6 +208,7 @@ class StreamHandler:
             self._ffmpeg_process = None  # избегаем гонки
             self._current_url = None
             self._current_radio = False
+            self._radio_url = None
 
             logger.info("⏹ Останавливаем текущий поток FFmpeg...")
 
@@ -226,7 +254,9 @@ class StreamHandler:
             self._current_ffmpeg_params = None
         logger.info(f"🎥 Запуск потоковой передачи с {yandex_url}")
         if radio:
-            yandex_url = await get_latest_index_url(yandex_url)
+            # Сохраняем исходный мастер-плейлист
+            self._radio_url = yandex_url
+            yandex_url = await get_latest_index_url(self._radio_url)
             self._current_ffmpeg_params = self._get_ffmpeg_params(codec="aac")
         else:
             self._current_ffmpeg_params = self._get_ffmpeg_params(codec="mp3")
@@ -277,7 +307,12 @@ class StreamHandler:
 
             except asyncio.CancelledError:
                 logger.info("🔌 Клиент отключился от стрима")
-                await self._restart_stream()
+                # Запускаем перезапуск в фоновой задаче только если
+                # не выполняется уже другой перезапуск
+                if not self._is_restarting and not self._restart_task:
+                    self._restart_task = asyncio.create_task(
+                        self._safe_restart_stream()
+                    )
                 raise
 
         media_type = "audio/mpeg" if not radio else "audio/aac"
@@ -297,12 +332,22 @@ class StreamHandler:
             headers=response_headers
         )
 
+    async def _safe_restart_stream(self):
+        """Безопасный перезапуск с очисткой задачи после завершения."""
+        try:
+            await self._restart_stream()
+        except Exception as e:
+            logger.exception(f"❌ Ошибка в безопасном перезапуске: {e}")
+        finally:
+            self._restart_task = None
+
     async def play_stream(self, yandex_url: str, radio: bool = False):
         """Запускает потоковую трансляцию и передает её на Ruark."""
         logger.info(f"🎶 Начинаем потоковое воспроизведение {yandex_url}")
 
-        # Сбрасываем счетчик попыток для нового потока
+        # Сбрасываем счетчик попыток и флаги для нового потока
         self._restart_attempts = 0
+        self._is_restarting = False
 
         try:
             # Запускаем потоковую передачу
