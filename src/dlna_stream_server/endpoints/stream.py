@@ -1,10 +1,11 @@
 import asyncio
 from logging import getLogger
 
-from fastapi import APIRouter, Response, Request
+from fastapi import APIRouter, Request, Response
 
 from core.dependencies.main_di_container import MainDIContainer
 from dlna_stream_server.handlers.stream_handler import StreamHandler
+from dlna_stream_server.handlers.utils import ruark_r5_request_logger
 
 logger = getLogger(__name__)
 
@@ -64,8 +65,7 @@ async def set_stream(yandex_url: str, radio: bool = False):
 @router.get("/live_stream.mp3")
 async def serve_stream(request: Request, radio: bool = False):
     """Раздает потоковый аудиофайл через HTTP."""
-    user_agent = request.headers.get("user-agent", "unknown")
-    logger.info(f"🛰️ Запрос потока от клиента: {user_agent}")
+    await ruark_r5_request_logger(request)
     return await stream_handler.stream_audio(radio)
 
 
@@ -76,7 +76,6 @@ async def serve_head(radio: bool = False):
         "Content-Type": "audio/mpeg" if not radio else "audio/aac",
         "Accept-Ranges": "bytes",
         "Connection": "keep-alive",
-        "Transfer-Encoding": "chunked"
     }
     return Response(headers=headers)
 

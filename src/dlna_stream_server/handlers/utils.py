@@ -3,6 +3,7 @@ import re
 from logging import getLogger
 
 import aiohttp
+from fastapi import Request
 
 logger = getLogger(__name__)
 
@@ -29,3 +30,17 @@ async def get_latest_index_url(master_url: str) -> str:
 
 if __name__ == "__main__":
     asyncio.run(get_latest_index_url())
+
+
+async def ruark_r5_request_logger(request: Request):
+    logger.info(f"ℹ️ Заголовки запроса: {request.headers}")
+    # Получаем тело запроса
+    user_agent = request.headers.get("user-agent", "unknown")
+    url = request.url
+    method = request.method
+    headers = request.headers
+
+    logger.info(f"ℹ️ User-Agent: {user_agent}")
+    logger.info(f"ℹ️ URL запроса: {url}")
+    logger.info(f"ℹ️ Метод запроса: {method}")
+    logger.info(f"ℹ️ Заголовки запроса: {headers}")

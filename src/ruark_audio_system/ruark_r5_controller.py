@@ -8,9 +8,11 @@ import aiohttp
 import upnpclient
 
 from core.config.settings import settings
+from ruark_audio_system.constants import META_INFO
 
 SESSION_ID_REGEX = re.compile(r"<sessionId>(.*?)</sessionId>")
 POWER_STATUS_REGEX = re.compile(r"<value><u8>(.*?)</u8></value>")
+
 
 logger = getLogger(__name__)
 
@@ -23,7 +25,10 @@ class RuarkR5Controller:
 
     _session_id: str
 
-    def __init__(self, device_name: str = "Ruark R5") -> None:
+    def __init__(
+            self,
+            device_name: str = "Ruark R5"
+    ) -> None:
         """Инициализация и поиск устройства Ruark R5 в сети"""
         self.device_name = device_name
         self.refresh_device()
@@ -120,10 +125,9 @@ class RuarkR5Controller:
         )
 
     #   AVTransport
-    async def set_av_transport_uri(
-        self, uri: str, metadata: str = ""
-    ) -> None:
+    async def set_av_transport_uri(self, uri: str) -> None:
         """Установка нового потока"""
+        metadata = self.generate_metadata_with_fake_duration(uri)
         await asyncio.to_thread(
             self.av_transport.SetAVTransportURI,
             InstanceID=0,
@@ -371,6 +375,11 @@ class RuarkR5Controller:
         except Exception as e:
             logger.error(f"Ошибка при выключении питания: {e}")
             return False
+
+    def generate_metadata_with_fake_duration(self, uri: str) -> str:
+        """Генерация DIDL-Lite метаданных с длительностью 999999 часов"""
+        logger.info(f"🔊 Генерируем метаданные для {uri}")
+        return META_INFO.format(url=uri)
 
     async def print_status(self) -> None:
         """Вывод текущего состояния устройства"""

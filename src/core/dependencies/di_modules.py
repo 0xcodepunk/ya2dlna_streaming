@@ -7,7 +7,7 @@ from main_stream_service.main_stream_manager import MainStreamManager
 from main_stream_service.yandex_music_api import YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.mdns_device_finder import DeviceFinder
-from yandex_station.protobuf import Protobuf
+from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
 
@@ -72,7 +72,9 @@ class RuarkR5ControllerModule(Module):
     """Класс для управления зависимостями RuarkR5Controller"""
     @singleton
     @provider
-    def provide_ruark_r5_controller(self) -> RuarkR5Controller:
+    def provide_ruark_r5_controller(
+        self,
+    ) -> RuarkR5Controller:
         return RuarkR5Controller()
 
 

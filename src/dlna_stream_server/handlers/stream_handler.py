@@ -7,7 +7,8 @@ from fastapi.responses import StreamingResponse
 from core.config.settings import settings
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
-from .constants import FFMPEG_AAC_PARAMS, FFMPEG_MP3_PARAMS
+from .constants import (FFMPEG_AAC_PARAMS, FFMPEG_MP3_PARAMS,  # noqa: F401
+                        FFMPEG_STABLE_PARAMS)
 from .utils import get_latest_index_url
 
 logger = getLogger(__name__)
@@ -84,27 +85,40 @@ class StreamHandler:
             logger.exception(f"❌ Ошибка в мониторинге FFmpeg: {e}")
 
     async def _log_stderr(self, proc):
-        """Логирование stderr FFmpeg процесса."""
+        """
+        Логирование stderr FFmpeg процесса
+        с фильтрацией по уровням важности.
+        """
         try:
             while True:
                 line = await proc.stderr.readline()
                 if not line:
                     break
                 line_str = line.decode('utf-8', errors='ignore').strip()
-                if line_str:
-                    # Фильтруем сообщения FFmpeg и логируем только важные
-                    keywords = [
-                        'error', 'failed', 'invalid', 'connection',
-                        'timeout', 'broken'
-                    ]
-                    if any(
-                        keyword in line_str.lower() for keyword in keywords
-                    ):
-                        logger.error(f"🔥 FFmpeg stderr: {line_str}")
-                    else:
-                        logger.debug(f"📝 FFmpeg stderr: {line_str}")
+                if not line_str:
+                    continue
+
+                lower_line = line_str.lower()
+
+                error_keywords = [
+                    'fatal', 'cannot open', 'invalid argument',
+                    'invalid data found'
+                ]
+                warning_keywords = [
+                    'error', 'failed', 'connection', 'broken', 'timeout',
+                    'invalid data found'
+                ]
+
+                if any(keyword in lower_line for keyword in error_keywords):
+                    logger.error(f"🔥 FFmpeg error: {line_str}")
+                elif any(
+                    keyword in lower_line for keyword in warning_keywords
+                ):
+                    logger.warning(f"⚠️ FFmpeg warning: {line_str}")
+                else:
+                    logger.debug(f"📝 FFmpeg: {line_str}")
         except Exception as e:
-            logger.debug(f"Завершено чтение stderr: {e}")
+            logger.debug(f"🛑 Завершено чтение stderr: {e}")
 
     async def _restart_stream(self):
         """Перезапуск потока с текущим URL."""
@@ -175,7 +189,7 @@ class StreamHandler:
                 logger.info("📤 SIGTERM отправлен FFmpeg")
 
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
+                    await asyncio.wait_for(proc.wait(), timeout=3)
                     logger.info(
                         f"✅ FFmpeg завершился, код: {proc.returncode}, "
                         f"PID: {proc.pid}"
@@ -253,21 +267,18 @@ class StreamHandler:
                 while True:
                     chunk = await proc.stdout.read(4096)
                     if not chunk:
-                        logger.warning(
+                        logger.debug(
                             "📭 Поток данных пуст — отправляем keepalive-байт"
                         )
-                        yield b"\0"  # посылаем нулевой байт, чтобы Ruark не думал, что всё зависло  # noqa: E501
+                        yield b"\0"
                         await asyncio.sleep(1.5)
                         continue
-
                     yield chunk
 
             except asyncio.CancelledError:
                 logger.info("🔌 Клиент отключился от стрима")
-                # Не останавливаем FFmpeg при отключении клиента
+                await self._restart_stream()
                 raise
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка в генераторе потока: {e}")
 
         media_type = "audio/mpeg" if not radio else "audio/aac"
         response_headers = {
@@ -320,6 +331,7 @@ class StreamHandler:
 
     def _get_ffmpeg_params(self, codec: str):
         if codec == "mp3":
+            # return FFMPEG_MP3_PARAMS
             return FFMPEG_MP3_PARAMS
         elif codec == "aac":
             return FFMPEG_AAC_PARAMS

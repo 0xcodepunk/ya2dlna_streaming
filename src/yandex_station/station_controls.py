@@ -6,7 +6,7 @@ from injector import inject
 
 from yandex_station.constants import ALICE_ACTIVE_STATES, FADE_TIME
 from yandex_station.models import Track
-from yandex_station.protobuf import Protobuf
+from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_ws_control import YandexStationClient
 
 logger = getLogger(__name__)
