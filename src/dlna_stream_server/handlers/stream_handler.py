@@ -7,8 +7,7 @@ from fastapi.responses import StreamingResponse
 from core.config.settings import settings
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
-from .constants import (FFMPEG_AAC_PARAMS, FFMPEG_MP3_PARAMS,  # noqa: F401
-                        FFMPEG_STABLE_PARAMS)
+from .constants import FFMPEG_AAC_PARAMS, FFMPEG_MP3_PARAMS
 from .utils import get_latest_index_url
 
 logger = getLogger(__name__)
@@ -65,9 +64,6 @@ class StreamHandler:
 
             # Ждем завершения процесса
             returncode = await proc.wait()
-            logger.warning(
-                f"⚠️ FFmpeg процесс завершился с кодом: {returncode}"
-            )
 
             # Отменяем задачу чтения stderr
             stderr_task.cancel()
@@ -76,11 +72,28 @@ class StreamHandler:
             except asyncio.CancelledError:
                 pass
 
-            # Проверяем нужность восстановления
-            if self._ffmpeg_process == proc and self._current_url:
+            # Логируем завершение с разным уровнем в зависимости от кода
+            if returncode == 0:
+                logger.info(
+                    f"✅ FFmpeg процесс завершился нормально "
+                    f"(код: {returncode}) - трек закончился естественным путем"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ FFmpeg процесс завершился с ошибкой "
+                    f"(код: {returncode})"
+                )
+
+            # Проверяем нужность восстановления - только при ошибках!
+            if (self._ffmpeg_process == proc and self._current_url
+                    and returncode != 0):
                 logger.info("🔄 Пытаемся автоматически восстановить поток...")
                 await asyncio.sleep(2)  # Небольшая задержка перед перезапуском
                 await self._restart_stream()
+            elif returncode == 0:
+                logger.info(
+                    "🏁 Поток завершился нормально, рестарт не требуется"
+                )
 
         except asyncio.CancelledError:
             logger.info("🔍 Мониторинг FFmpeg процесса отменен")
@@ -154,10 +167,12 @@ class StreamHandler:
 
             if self._current_radio:
                 # При перезапуске передаем исходный мастер-плейлист
+                logger.info("🚀 Используем быструю логику для рестарта радио")
                 await self.start_ffmpeg_stream(
                     self._radio_url, self._current_radio
                 )
             else:
+                logger.info("🚀 Используем быструю логику для рестарта трека")
                 await self.start_ffmpeg_stream(
                     self._current_url, self._current_radio
                 )
@@ -175,12 +190,73 @@ class StreamHandler:
                 self._ruark_controls.play
             )
             self._restart_attempts = 0
-            logger.info("✅ Поток успешно перезапущен")
+            logger.info("✅ Поток успешно перезапущен быстрой логикой!")
 
         except Exception as e:
             logger.exception(f"❌ Ошибка при перезапуске потока: {e}")
         finally:
             self._is_restarting = False
+
+    async def _stop_ffmpeg_background(
+        self, proc_to_stop, monitor_task_to_stop
+    ):
+        """Останавливает процесс FFmpeg в фоновом режиме без блокировки."""
+        if not proc_to_stop:
+            return
+
+        logger.info(
+            f"🔄 Фоновое завершение FFmpeg процесса "
+            f"PID: {proc_to_stop.pid}"
+        )
+
+        # Отменяем задачу мониторинга
+        if monitor_task_to_stop:
+            monitor_task_to_stop.cancel()
+            try:
+                await monitor_task_to_stop
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            proc_to_stop.terminate()
+            logger.debug(
+                f"📤 SIGTERM отправлен старому FFmpeg PID: {proc_to_stop.pid}"
+            )
+
+            try:
+                await asyncio.wait_for(proc_to_stop.wait(), timeout=10)
+                logger.info(
+                    f"✅ Старый FFmpeg завершился, код: "
+                    f"{proc_to_stop.returncode}, PID: {proc_to_stop.pid}"
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"⚠️ Старый FFmpeg PID {proc_to_stop.pid} не завершился "
+                    f"вовремя, принудительное завершение"
+                )
+                proc_to_stop.kill()
+                try:
+                    await asyncio.wait_for(proc_to_stop.wait(), timeout=1)
+                    logger.info(
+                        f"✅ Старый FFmpeg принудительно завершён, "
+                        f"код: {proc_to_stop.returncode}"
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f"❌ Старый FFmpeg PID {proc_to_stop.pid} "
+                        f"не завершился даже после kill()"
+                    )
+
+        except ProcessLookupError:
+            logger.debug(
+                f"⚠️ Старый FFmpeg PID {proc_to_stop.pid} уже завершился "
+                f"(ProcessLookupError)"
+            )
+        except Exception as e:
+            logger.exception(
+                f"❌ Ошибка при фоновом завершении FFmpeg "
+                f"PID {proc_to_stop.pid}: {e}"
+            )
 
     async def stop_ffmpeg(self):
         """Останавливает текущий процесс FFmpeg, если он запущен."""
@@ -205,54 +281,49 @@ class StreamHandler:
 
         if self._ffmpeg_process:
             proc = self._ffmpeg_process
-            self._ffmpeg_process = None  # избегаем гонки
+            monitor_task = self._monitor_task
+            # Сбрасываем состояние сразу
+            self._ffmpeg_process = None
+            self._monitor_task = None
             self._current_url = None
             self._current_radio = False
             self._radio_url = None
+            self._restart_attempts = 0
 
             logger.info("⏹ Останавливаем текущий поток FFmpeg...")
 
-            try:
-                proc.terminate()
-                logger.info("📤 SIGTERM отправлен FFmpeg")
-
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=3)
-                    logger.info(
-                        f"✅ FFmpeg завершился, код: {proc.returncode}, "
-                        f"PID: {proc.pid}"
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "⚠️ FFmpeg не завершился вовремя, "
-                        "принудительное завершение."
-                    )
-                    proc.kill()
-                    logger.debug("💀 Отправили kill()")
-
-                    try:
-                        await asyncio.wait_for(proc.wait(), timeout=5)
-                        logger.info(
-                            f"✅ FFmpeg принудительно завершён, "
-                            f"код: {proc.returncode}"
-                        )
-                    except asyncio.TimeoutError:
-                        logger.error(
-                            "❌ FFmpeg не завершился даже после kill() — "
-                            "залипший процесс!"
-                        )
-
-            except ProcessLookupError:
-                logger.warning("⚠️ FFmpeg уже завершился (ProcessLookupError)")
-            except Exception as e:
-                logger.exception(f"❌ Ошибка при остановке FFmpeg: {e}")
+            await self._stop_ffmpeg_background(proc, monitor_task)
 
     async def start_ffmpeg_stream(self, yandex_url: str, radio: bool = False):
         """Запускает потоковую передачу через FFmpeg."""
-        await self.stop_ffmpeg()  # Останавливаем старый процесс
+        # Сохраняем ссылки на старый процесс для фонового завершения
+        old_process = self._ffmpeg_process
+        old_monitor_task = self._monitor_task
+
+        # Сбрасываем текущие ссылки сразу, не дожидаясь завершения старого
+        self._ffmpeg_process = None
+        self._monitor_task = None
         if self._current_ffmpeg_params:
             self._current_ffmpeg_params = None
+
+        # Отменяем задачи перезапуска, если они выполняются
+        if self._restart_task:
+            self._restart_task.cancel()
+            try:
+                await self._restart_task
+            except asyncio.CancelledError:
+                pass
+            self._restart_task = None
+        self._is_restarting = False
+
         logger.info(f"🎥 Запуск потоковой передачи с {yandex_url}")
+
+        # Запускаем фоновое завершение старого процесса (не блокирующе)
+        if old_process:
+            asyncio.create_task(
+                self._stop_ffmpeg_background(old_process, old_monitor_task)
+            )
+
         if radio:
             # Сохраняем исходный мастер-плейлист
             self._radio_url = yandex_url
@@ -307,12 +378,8 @@ class StreamHandler:
 
             except asyncio.CancelledError:
                 logger.info("🔌 Клиент отключился от стрима")
-                # Запускаем перезапуск в фоновой задаче только если
-                # не выполняется уже другой перезапуск
-                if not self._is_restarting and not self._restart_task:
-                    self._restart_task = asyncio.create_task(
-                        self._safe_restart_stream()
-                    )
+                # Убираем остановку FFmpeg при отключении клиента
+                # await self.stop_ffmpeg()
                 raise
 
         media_type = "audio/mpeg" if not radio else "audio/aac"
@@ -350,7 +417,7 @@ class StreamHandler:
         self._is_restarting = False
 
         try:
-            # Запускаем потоковую передачу
+            # Запускаем потоковую передачу (теперь быстро, без ожидания)
             await self.start_ffmpeg_stream(yandex_url, radio)
             track_url = (
                 f"http://{settings.local_server_host}:"
@@ -369,6 +436,9 @@ class StreamHandler:
             await self.execute_with_lock(
                 self._ruark_controls.play
             )
+
+            logger.info("✅ Переключение трека завершено быстро!")
+
         except Exception as e:
             logger.exception(f"❌ Ошибка при запуске потока: {e}")
             await self.stop_ffmpeg()
@@ -376,7 +446,6 @@ class StreamHandler:
 
     def _get_ffmpeg_params(self, codec: str):
         if codec == "mp3":
-            # return FFMPEG_MP3_PARAMS
             return FFMPEG_MP3_PARAMS
         elif codec == "aac":
             return FFMPEG_AAC_PARAMS
