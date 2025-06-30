@@ -355,42 +355,74 @@ class StreamHandler:
         )
 
     async def stream_audio(self, radio: bool = False):
-        if not self._ffmpeg_process:
+        """
+        Отдаёт потоковый аудио-ответ клиенту.
+        Реализована защита от залипания: если FFmpeg завершился
+        или не даёт данных — поток закрывается.
+        """
+        proc = self._ffmpeg_process
+        if not proc:
             raise HTTPException(status_code=404, detail="Поток не запущен")
 
         async def generate():
             try:
-                proc = self._ffmpeg_process
-                if not proc:
-                    logger.info("🛑 FFmpeg-процесс отсутствует в generate()")
-                    return
-
+                empty_count = 0
                 while True:
-                    chunk = await proc.stdout.read(4096)
+                    # Проверка на завершение FFmpeg (stdout закрыт)
+                    if proc.stdout.at_eof():
+                        logger.info(
+                            "📭 FFmpeg stdout закрылся (EOF) — поток завершён"
+                        )
+                        break
+
+                    try:
+                        chunk = await asyncio.wait_for(
+                            proc.stdout.read(4096),
+                            timeout=3
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "⌛ Таймаут чтения stdout — возможно, зависание"
+                        )
+                        chunk = b""
+
                     if not chunk:
+                        empty_count += 1
                         logger.debug(
-                            "📭 Поток данных пуст — отправляем keepalive-байт"
+                            f"📭 Пустой chunk ({empty_count}), "
+                            f"отправляем keepalive"
                         )
                         yield b"\0"
                         await asyncio.sleep(1.5)
+                        if empty_count >= 10:
+                            logger.error(
+                                "❌ Поток завис: 10 пустых чтений подряд — "
+                                "останавливаем FFmpeg"
+                            )
+                            await self.stop_ffmpeg()
+                            break
                         continue
+
+                    empty_count = 0
                     yield chunk
 
             except asyncio.CancelledError:
                 logger.info("🔌 Клиент отключился от стрима")
-                # Убираем остановку FFmpeg при отключении клиента
-                # await self.stop_ffmpeg()
                 raise
+            except Exception as e:
+                logger.exception(f"❌ Ошибка во время генерации стрима: {e}")
+                await self.stop_ffmpeg()
 
         media_type = "audio/mpeg" if not radio else "audio/aac"
         response_headers = {
-            "Content-Type": "audio/mpeg" if not radio else "audio/aac",
+            "Content-Type": media_type,
             "Accept-Ranges": "bytes",
             "Connection": "keep-alive",
         }
+
         logger.info(
-            f"🎧 Отправляем стрим с типом {media_type} и заголовками "
-            f"{response_headers}"
+            f"🎧 Отправляем стрим с типом {media_type} "
+            f"и заголовками {response_headers}"
         )
 
         return StreamingResponse(
