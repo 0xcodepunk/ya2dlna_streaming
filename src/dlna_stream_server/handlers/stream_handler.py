@@ -1,13 +1,16 @@
 import asyncio
+import os
 from logging import getLogger
 
+import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.config.settings import settings
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
-from .constants import FFMPEG_AAC_PARAMS, FFMPEG_MP3_PARAMS
+from .constants import (FFMPEG_AAC_PARAMS, FFMPEG_LOCAL_MP3_PARAMS,
+                        FFMPEG_MP3_PARAMS)
 from .utils import get_latest_index_url
 
 logger = getLogger(__name__)
@@ -100,7 +103,7 @@ class StreamHandler:
         except Exception as e:
             logger.exception(f"❌ Ошибка в мониторинге FFmpeg: {e}")
 
-    async def _log_stderr(self, proc):
+    async def _log_stderr(self, proc: asyncio.subprocess.Process):
         """
         Логирование stderr FFmpeg процесса
         с фильтрацией по уровням важности.
@@ -116,21 +119,33 @@ class StreamHandler:
 
                 lower_line = line_str.lower()
 
+                # Диагностика: обязательно логируем все ошибки и завершения
                 error_keywords = [
                     'fatal', 'cannot open', 'invalid argument',
-                    'invalid data found'
+                    'invalid data found', 'no such file', 'permission denied'
                 ]
                 warning_keywords = [
                     'error', 'failed', 'connection', 'broken', 'timeout',
-                    'invalid data found'
+                    'invalid data found', 'deprecated'
                 ]
 
-                if any(keyword in lower_line for keyword in error_keywords):
+                # Специальные ключевые слова для диагностики
+                critical_keywords = [
+                    'segmentation fault', 'core dumped', 'killed',
+                    'terminated', 'aborted'
+                ]
+
+                if any(keyword in lower_line for keyword in critical_keywords):
+                    logger.error(f"💥 FFmpeg CRITICAL: {line_str}")
+                elif any(keyword in lower_line for keyword in error_keywords):
                     logger.error(f"🔥 FFmpeg error: {line_str}")
                 elif any(
                     keyword in lower_line for keyword in warning_keywords
                 ):
-                    logger.warning(f"⚠️ FFmpeg warning: {line_str}")
+                    logger.debug(f"⚠️ FFmpeg warning: {line_str}")
+                elif 'duration:' in lower_line or 'bitrate:' in lower_line:
+                    # Информация о файле - важно для диагностики
+                    logger.debug(f"📋 FFmpeg info: {line_str}")
                 else:
                     logger.debug(f"📝 FFmpeg: {line_str}")
         except Exception as e:
@@ -219,7 +234,7 @@ class StreamHandler:
 
         try:
             proc_to_stop.terminate()
-            logger.debug(
+            logger.info(
                 f"📤 SIGTERM отправлен старому FFmpeg PID: {proc_to_stop.pid}"
             )
 
@@ -248,7 +263,7 @@ class StreamHandler:
                     )
 
         except ProcessLookupError:
-            logger.debug(
+            logger.info(
                 f"⚠️ Старый FFmpeg PID {proc_to_stop.pid} уже завершился "
                 f"(ProcessLookupError)"
             )
@@ -296,6 +311,10 @@ class StreamHandler:
 
     async def start_ffmpeg_stream(self, yandex_url: str, radio: bool = False):
         """Запускает потоковую передачу через FFmpeg."""
+        # Очищаем папку от старых MP3 файлов перед запуском нового стрима
+        if not radio and settings.stream_is_local_file:
+            asyncio.create_task(self._cleanup_mp3_files())
+
         # Сохраняем ссылки на старый процесс для фонового завершения
         old_process = self._ffmpeg_process
         old_monitor_task = self._monitor_task
@@ -330,14 +349,23 @@ class StreamHandler:
             yandex_url = await get_latest_index_url(self._radio_url)
             self._current_ffmpeg_params = self._get_ffmpeg_params(codec="aac")
         else:
-            self._current_ffmpeg_params = self._get_ffmpeg_params(codec="mp3")
+            yandex_url = (
+                await self._download_and_get_local_mp3_path(yandex_url)
+                if settings.stream_is_local_file
+                else yandex_url
+            )
+            self._current_ffmpeg_params = self._get_ffmpeg_params(
+                codec="mp3", is_local_file=settings.stream_is_local_file
+            )
         self._current_url = yandex_url
         self._current_radio = radio
 
         # Улучшенные параметры для стабильной работы с временными ссылками
         ffmpeg_params = [
             param.format(yandex_url=yandex_url)
-            if isinstance(param, str) and '{yandex_url}' in param
+            if isinstance(param, str) and (
+                '{yandex_url}' in param
+            )
             else param
             for param in self._current_ffmpeg_params
         ]
@@ -346,6 +374,7 @@ class StreamHandler:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+
         logger.info(
             f"🎥 Запущен процесс FFmpeg с PID: {self._ffmpeg_process.pid}"
         )
@@ -367,7 +396,16 @@ class StreamHandler:
         async def generate():
             try:
                 empty_count = 0
+                total_bytes_sent = 0
                 while True:
+                    # Диагностика: проверяем статус процесса
+                    if proc.returncode is not None:
+                        logger.warning(
+                            f"⚠️ FFmpeg процесс завершился с кодом: "
+                            f"{proc.returncode}"
+                        )
+                        break
+
                     # Проверка на завершение FFmpeg (stdout закрыт)
                     if proc.stdout.at_eof():
                         logger.info(
@@ -378,7 +416,7 @@ class StreamHandler:
                     try:
                         chunk = await asyncio.wait_for(
                             proc.stdout.read(4096),
-                            timeout=3
+                            timeout=5
                         )
                     except asyncio.TimeoutError:
                         logger.warning(
@@ -388,7 +426,7 @@ class StreamHandler:
 
                     if not chunk:
                         empty_count += 1
-                        logger.debug(
+                        logger.info(
                             f"📭 Пустой chunk ({empty_count}), "
                             f"отправляем keepalive"
                         )
@@ -404,32 +442,42 @@ class StreamHandler:
                         continue
 
                     empty_count = 0
+                    total_bytes_sent += len(chunk)
+                    # Диагностика: логируем прогресс передачи данных
+                    if total_bytes_sent % (1024 * 1024) == 0:  # Каждый МБ
+                        logger.info(
+                            f"📊 Передано данных: "
+                            f"{total_bytes_sent // 1024 // 1024} МБ"
+                        )
                     yield chunk
 
             except asyncio.CancelledError:
                 logger.info("🔌 Клиент отключился от стрима")
+                logger.info(
+                    f"📊 Всего передано данных: {total_bytes_sent} байт"
+                )
+                # Диагностика: проверяем состояние FFmpeg при отключении
+                if proc.returncode is None:
+                    logger.debug(
+                        "⚠️ FFmpeg всё ещё работает после отключения клиента"
+                    )
+                else:
+                    logger.info(
+                        f"ℹ️ FFmpeg завершился с кодом: {proc.returncode}"
+                    )
                 raise
             except Exception as e:
                 logger.exception(f"❌ Ошибка во время генерации стрима: {e}")
+                logger.info(
+                    f"📊 Всего передано данных: {total_bytes_sent} байт"
+                )
                 await self.stop_ffmpeg()
 
         media_type = "audio/mpeg" if not radio else "audio/aac"
-        response_headers = {
-            "Content-Type": media_type,
-            "Accept-Ranges": "bytes",
-            "Connection": "keep-alive",
-        }
 
-        logger.info(
-            f"🎧 Отправляем стрим с типом {media_type} "
-            f"и заголовками {response_headers}"
-        )
+        logger.info(f"🎧 Отправляем стрим с типом {media_type}")
 
-        return StreamingResponse(
-            generate(),
-            media_type=media_type,
-            headers=response_headers
-        )
+        return StreamingResponse(generate(), media_type=media_type)
 
     async def _safe_restart_stream(self):
         """Безопасный перезапуск с очисткой задачи после завершения."""
@@ -476,9 +524,58 @@ class StreamHandler:
             await self.stop_ffmpeg()
             raise
 
-    def _get_ffmpeg_params(self, codec: str):
+    async def _download_and_get_local_mp3_path(self, yandex_url: str):
+        """Получает MP3 файл по ссылке."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(yandex_url) as response:
+                if response.status != 200:
+                    logger.error(
+                        f"Не удалось получить MP3 файл: {response.status}"
+                    )
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Не удалось получить MP3 файл"
+                    )
+                # Сохраняем в папку handlers/mp3_files
+                mp3_dir = os.path.join(os.path.dirname(__file__), "mp3_files")
+                os.makedirs(mp3_dir, exist_ok=True)
+
+                filename = yandex_url.split('/')[-1]
+                mp3_local_path = os.path.join(mp3_dir, filename)
+
+                if not mp3_local_path.endswith(".mp3"):
+                    mp3_local_path += ".mp3"
+                with open(mp3_local_path, "wb") as file:
+                    file.write(await response.read())
+                logger.info(f"✅ MP3 файл сохранён в {mp3_local_path}")
+                return mp3_local_path
+
+    async def _cleanup_mp3_files(self):
+        """Очищает папку handlers/mp3_files от всех сохранённых MP3 файлов."""
+        mp3_dir = os.path.join(os.path.dirname(__file__), "mp3_files")
+        try:
+            if os.path.exists(mp3_dir):
+                # Удаляем все файлы в папке
+                for filename in os.listdir(mp3_dir):
+                    file_path = os.path.join(mp3_dir, filename)
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                        logger.info(f"🗑️ Удалён старый MP3 файл: {file_path}")
+                logger.info(
+                    f"🧹 Папка {mp3_dir} очищена от старых MP3 файлов"
+                )
+            else:
+                logger.info(
+                    f"📁 Папка {mp3_dir} не существует, пропускаем очистку"
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при очистке папки {mp3_dir}: {e}")
+
+    def _get_ffmpeg_params(self, codec: str, is_local_file: bool = False):
         if codec == "mp3":
-            return FFMPEG_MP3_PARAMS
+            return (
+                FFMPEG_LOCAL_MP3_PARAMS if is_local_file else FFMPEG_MP3_PARAMS
+            )
         elif codec == "aac":
             return FFMPEG_AAC_PARAMS
         else:

@@ -37,5 +37,9 @@ class Settings(BaseSettings):
     # Mode settings
     debug: bool = False
 
+    # Stream settings
+    stream_quality: str = "192"
+    stream_is_local_file: bool = False
+
 
 settings = Settings()

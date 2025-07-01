@@ -144,7 +144,8 @@ class MainStreamManager:
                         else:
                             track_url = (
                                 await self._yandex_music_api.get_file_info(
-                                    track.id
+                                    track_id=track.id,
+                                    quality=settings.stream_quality
                                 )
                             )
                         await self._send_track_to_stream_server(
