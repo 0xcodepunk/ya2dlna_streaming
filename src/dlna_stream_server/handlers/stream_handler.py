@@ -77,6 +77,11 @@ class StreamHandler:
 
             # Логируем завершение с разным уровнем в зависимости от кода
             if returncode == 0:
+                if self._current_radio:
+                    self._restart_task = asyncio.create_task(
+                        self._safe_restart_stream()
+                    )
+                    logger.info("🔄 Перезапускаем поток радио в фоновом режиме")
                 logger.info(
                     f"✅ FFmpeg процесс завершился нормально "
                     f"(код: {returncode}) - трек закончился естественным путем"
@@ -170,7 +175,11 @@ class StreamHandler:
 
         self._is_restarting = True
         self._restart_attempts += 1
-        delay = min(2 ** self._restart_attempts, 30)  # Прогрессивная задержка
+        delay = (
+            min(2 ** self._restart_attempts, 30)
+            if not self._current_radio
+            else 0
+        )  # Прогрессивная задержка
 
         try:
             logger.info(
