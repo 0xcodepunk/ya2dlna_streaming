@@ -98,6 +98,7 @@ class MainStreamManager:
                 progress=0,
                 playing=False
             )
+            stuck_track_count = 0
             last_track_progress = 0
             volume_set_count = 0
             speak_count = 0
@@ -132,13 +133,21 @@ class MainStreamManager:
                         if last_track_progress == track.progress:
                             await self._ruark_controls.stop()
                         else:
-                            if not await self._recover_stuck_track(
-                                track, last_track_progress
-                            ):
+                            stuck_track_count += 1
+                            if stuck_track_count > 2:
                                 logger.warning(
-                                    "⚠️ Не удалось перезапустить трек "
-                                    "через stop/play"
+                                    "⚠️ Трек застрял, перезапускаем"
                                 )
+                                if not await self._recover_stuck_track(
+                                    track, last_track_progress
+                                ):
+                                    stuck_track_count = 0
+                                else:
+                                    logger.warning(
+                                        "⚠️ Не удалось перезапустить трек "
+                                        "через stop/play"
+                                    )
+                                    stuck_track_count = 0
 
                     if (
                         last_track_progress != track.progress
