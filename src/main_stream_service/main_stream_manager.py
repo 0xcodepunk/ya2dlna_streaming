@@ -151,6 +151,7 @@ class MainStreamManager:
                             .get_radio_url(),
                             radio=True
                         )
+                        await asyncio.sleep(1)
 
                     if track.id == last_track.id:
                         track = (
