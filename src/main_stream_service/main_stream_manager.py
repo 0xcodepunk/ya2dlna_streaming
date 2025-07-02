@@ -145,7 +145,7 @@ class MainStreamManager:
                         and track.type == "FmRadio"
                         and not await self._ruark_controls.is_playing()
                     ):
-                        logger.info("🔁 Воспроизведение радиостанции")
+                        logger.info("🔁 Возобновляем воспроизведение радио")
                         await self._send_track_to_stream_server(
                             track_url=await self._station_controls
                             .get_radio_url(),
