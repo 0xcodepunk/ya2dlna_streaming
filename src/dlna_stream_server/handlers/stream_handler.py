@@ -396,6 +396,8 @@ class StreamHandler:
         async def generate():
             try:
                 empty_count = 0
+                # Счётчик таймаутов для снижения шума в логах
+                timeout_count = 0
                 total_bytes_sent = 0
                 while True:
                     # Диагностика: проверяем статус процесса
@@ -416,21 +418,24 @@ class StreamHandler:
                     try:
                         chunk = await asyncio.wait_for(
                             proc.stdout.read(4096),
-                            timeout=5
+                            timeout=15  # Увеличили с 5 до 15 секунд
                         )
                     except asyncio.TimeoutError:
-                        logger.warning(
-                            "⌛ Таймаут чтения stdout — возможно, зависание"
-                        )
+                        timeout_count += 1
+                        # Логируем только каждый 3-й таймаут для снижения шума
+                        if timeout_count % 3 == 0:
+                            logger.warning(
+                                f"⌛ Таймаут чтения stdout #{timeout_count} — "
+                                f"возможно, зависание"
+                            )
                         chunk = b""
 
                     if not chunk:
                         empty_count += 1
-                        logger.info(
+                        logger.debug(
                             f"📭 Пустой chunk ({empty_count}), "
-                            f"отправляем keepalive"
+                            f"ждем данные"
                         )
-                        yield b"\0"
                         await asyncio.sleep(1.5)
                         if empty_count >= 10:
                             logger.error(
@@ -442,6 +447,8 @@ class StreamHandler:
                         continue
 
                     empty_count = 0
+                    # Сбрасываем счётчик при получении данных
+                    timeout_count = 0
                     total_bytes_sent += len(chunk)
                     # Диагностика: логируем прогресс передачи данных
                     if total_bytes_sent % (1024 * 1024) == 0:  # Каждый МБ

@@ -43,6 +43,14 @@ class YandexStationControls:
         logger.info("🔄 Остановка WebSocket-клиента")
         await self._ws_client.close()
 
+    async def play(self):
+        """Запуск воспроизведения"""
+        await self._ws_client.send_command({"command": "play"})
+
+    async def stop(self):
+        """Остановка воспроизведения"""
+        await self._ws_client.send_command({"command": "stop"})
+
     async def send_text(self, text: str):
         """Отправка текстового сообщения"""
         logger.info(f"🔊 Отправка текстового сообщения: {text}")

@@ -40,6 +40,7 @@ class YandexStationClient:
         self.running = True
         self.reconnect_required = False
         self._connect_task: asyncio.Task | None = None
+        self._connected_at = None
         self.tasks = []  # Хранение фоновых задач
 
         self.device_finder.find_devices()  # Поиск устройств Yandex в сети
@@ -68,7 +69,12 @@ class YandexStationClient:
 
         try:
             while True:
-                self.reconnect_required = False
+                if self.reconnect_required:
+                    await self.send_command({"command": "stop"})
+                    await asyncio.sleep(1)
+                    await self.send_command({"command": "play"})
+                    self.reconnect_required = False
+
                 self.running = True
 
                 try:
@@ -161,7 +167,7 @@ class YandexStationClient:
                         break
 
                     logger.info(
-                        f"🔄 Переподключение через"
+                        f"🔄 Переподключение через "
                         f"{SOCKET_RECONNECT_DELAY} секунд..."
                     )
                     await asyncio.sleep(SOCKET_RECONNECT_DELAY)
@@ -174,7 +180,7 @@ class YandexStationClient:
         """Поддерживает WebSocket-соединение активным"""
         try:
             while self.running:
-                await asyncio.sleep(10)
+                await asyncio.sleep(30)
 
                 if not self.running:
                     logger.debug(
@@ -184,6 +190,13 @@ class YandexStationClient:
                     return
 
                 try:
+
+                    if self.websocket and not self.websocket.closed:
+                        await self.websocket.ping()
+                        logger.info(
+                            "📡 Отправлен ping-frame через aiohttp.WebSocket"
+                        )
+
                     response = await self.send_command({"command": "ping"})
                     if response.get("error") == "Timeout":
                         logger.warning(
@@ -226,16 +239,18 @@ class YandexStationClient:
     async def authenticate(self) -> bool:
         """Отправляет пинг и ожидает ответа для подтверждения авторизации."""
         try:
-            response = await self.send_command({"command": "ping"})
+            response = await self.send_command({"command": "softwareVersion"})
 
             if response.get("requestId"):
                 logger.info(
-                    f"🔑 Авторизация успешна: {response.get('requestId')}"
+                    f"🔑 Авторизация успешна: {response.get('requestId')}\n"
+                    f"🔖 Версия ПО: {response.get('softwareVersion')}"
                 )
 
             if response.get("error") == "Timeout":
                 raise asyncio.TimeoutError("Timeout")
 
+            self._connected_at = time.monotonic()
             self.authenticated = True
             return True
 
@@ -289,7 +304,8 @@ class YandexStationClient:
 
                 elif msg.type == aiohttp.WSMsgType.CLOSE:
                     logger.warning(
-                        "❌ WebSocket закрывается на стороне станции (CLOSE)"
+                        f"❌ WebSocket закрывается на стороне станции (CLOSE): "
+                        f"{msg}"
                     )
                     self.reconnect_required = True
                     self.running = False
@@ -300,7 +316,17 @@ class YandexStationClient:
                     self.running = False
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    logger.warning("❌ WebSocket закрыт станцией (CLOSED)")
+                    logger.warning(
+                        f"❌ WebSocket закрыт станцией (CLOSED): "
+                        f"{msg}"
+                    )
+                    total_seconds = time.monotonic() - self._connected_at
+                    minutes = total_seconds // 60
+                    seconds = total_seconds % 60
+                    logger.warning(
+                        f"⌛️ Время работы WebSocket: {minutes:.0f} минут, "
+                        f"секунд: {seconds:.1f}"
+                    )
                     self.reconnect_required = True
                     self.running = False
                     break

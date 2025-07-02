@@ -98,6 +98,7 @@ class MainStreamManager:
                 progress=0,
                 playing=False
             )
+            last_track_progress = 0
             volume_set_count = 0
             speak_count = 0
 
@@ -128,7 +129,28 @@ class MainStreamManager:
 
                 if current_alice_state == "IDLE":
                     if not track.playing:
-                        await self._ruark_controls.stop()
+                        if last_track_progress == track.progress:
+                            await self._ruark_controls.stop()
+                        else:
+                            if not await self._recover_stuck_track(
+                                track, last_track_progress
+                            ):
+                                logger.warning(
+                                    "⚠️ Не удалось перезапустить трек "
+                                    "через stop/play"
+                                )
+
+                    if (
+                        last_track_progress != track.progress
+                        and track.type == "FmRadio"
+                        and not await self._ruark_controls.is_playing()
+                    ):
+                        logger.info("🔁 Воспроизведение радиостанции")
+                        await self._send_track_to_stream_server(
+                            track_url=await self._station_controls
+                            .get_radio_url(),
+                            radio=True
+                        )
 
                     if track.id == last_track.id:
                         track = (
@@ -208,7 +230,7 @@ class MainStreamManager:
                     current_alice_state,
                     last_alice_state
                 )
-
+                last_track_progress = track.progress
                 last_alice_state = current_alice_state
                 logger.debug("💤 Цикл стриминга работает")
                 await asyncio.sleep(1.0)
@@ -286,6 +308,30 @@ class MainStreamManager:
                     f"Ответ от стрим сервера: {response.get('message')}"
                 )
                 return response
+
+    async def _recover_stuck_track(
+            self,
+            track: Track,
+            last_progress: int
+    ) -> bool:
+        logger.warning(
+            "⚠️ Track.playing=False при IDLE, но прогресс меняется — "
+            "пробуем перезапустить"
+        )
+        for _ in range(3):
+            await self._station_controls.stop()
+            await asyncio.sleep(0.3)
+            await self._station_controls.play()
+            await asyncio.sleep(0.7)
+
+            updated_track = await self._station_controls.get_current_track()
+            if (
+                updated_track.id == track.id
+                and updated_track.progress > last_progress
+            ):
+                logger.info("✅ Трек успешно перезапущен")
+                return True
+        return False
 
     def _log_current_track(self, track: Track, state: str, last_state: str):
         logger.info(

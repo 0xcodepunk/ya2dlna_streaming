@@ -38,7 +38,7 @@ class YandexMusicAPI:
 
         if quality:
             quality = int(quality)
-            logger.info(f"🔍 Ищем ссылку на {quality} kbps")
+            logger.info(f"🔍 Ищем ссылку с качеством: {quality} kbps")
             for info in candidates:
                 if info.bitrate_in_kbps == quality:
                     logger.info(f"✅ Найдена: {info.direct_link}")
