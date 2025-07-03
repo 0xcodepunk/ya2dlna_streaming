@@ -38,6 +38,7 @@ FFMPEG_LOCAL_MP3_PARAMS = [
 
 FFMPEG_AAC_PARAMS = [
     "ffmpeg",
+    "-re",
     "-rw_timeout", "5000000",
     "-analyzeduration", "1000000",
     "-thread_queue_size", "4096",
@@ -48,8 +49,9 @@ FFMPEG_AAC_PARAMS = [
     "-reconnect_delay_max", "10",
     "-i", "{yandex_url}",
     "-vn",
-    "-c:a", "copy",
+    "-c:a", "aac",
     "-bsf:a", "aac_adtstoasc",
     "-f", "adts",
+    "-bufsize", "2M",
     "pipe:1"
 ]
