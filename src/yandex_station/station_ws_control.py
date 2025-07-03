@@ -527,7 +527,7 @@ class YandexStationClient:
                 '..',
                 '..',
                 'logs',
-                'version_log.log'
+                'firmware_version.log'
             ))
             os.makedirs(os.path.dirname(version_log_file_path), exist_ok=True)
             current_version = ""
