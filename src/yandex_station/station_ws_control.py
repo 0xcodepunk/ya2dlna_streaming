@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import ssl
 import time
 import uuid
@@ -242,10 +243,13 @@ class YandexStationClient:
             response = await self.send_command({"command": "softwareVersion"})
 
             if response.get("requestId"):
+                request_id = response.get("requestId")
+                software_version = response.get("softwareVersion")
                 logger.info(
-                    f"🔑 Авторизация успешна: {response.get('requestId')}\n"
-                    f"🔖 Версия ПО: {response.get('softwareVersion')}"
+                    f"🔑 Авторизация успешна: {request_id}\n"
+                    f"🔖 Версия ПО: {software_version}"
                 )
+                self._log_software_version(software_version)
 
             if response.get("error") == "Timeout":
                 raise asyncio.TimeoutError("Timeout")
@@ -514,6 +518,39 @@ class YandexStationClient:
                 logger.error(f"❌ Ошибка при остановке задачи подключения: {e}")
             self._connect_task = None
             logger.info("✅ Задача подключения к станции отменена")
+
+    def _log_software_version(self, software_version: str):
+        """Логирует версию ПО станции в файл, если она изменилась."""
+        try:
+            version_log_file_path = os.path.abspath(os.path.join(
+                os.path.dirname(__file__),
+                '..',
+                '..',
+                'logs',
+                'version_log.log'
+            ))
+            os.makedirs(os.path.dirname(version_log_file_path), exist_ok=True)
+            current_version = ""
+            if os.path.exists(version_log_file_path):
+                with open(version_log_file_path, "r") as file:
+                    lines = file.readlines()
+                    if lines:
+                        # Берем последнюю строку и извлекаем версию
+                        last_line = lines[-1].strip()
+                        if last_line:
+                            current_version = last_line.split(' - ')[0]
+
+            if current_version != software_version:
+                with open(version_log_file_path, "a") as file:
+                    file.write(
+                        f"{software_version} - "
+                        f"{time.strftime('%d-%m-%Y %H:%M:%S')}\n"
+                    )
+                logger.info(f"📝 Версия ПО записана в лог: {software_version}")
+            else:
+                logger.debug("📝 Версия ПО не изменилась")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при записи версии ПО в лог: {e}")
 
     def _fail_all_pending_futures(self, error: Exception):
         """Завершает все зависшие Future"""
