@@ -70,11 +70,9 @@ class YandexStationClient:
 
         try:
             while True:
-                if self.reconnect_required:
-                    await self.send_command({"command": "stop"})
-                    await asyncio.sleep(1)
-                    await self.send_command({"command": "play"})
-                    self.reconnect_required = False
+                # Сохраняем флаг для отправки команд после переподключения
+                need_restart_playback = self.reconnect_required
+                self.reconnect_required = False
 
                 self.running = True
 
@@ -143,6 +141,24 @@ class YandexStationClient:
                             )
                             await self.refresh_token()
                             continue  # Попробуем снова
+
+                        # Отправляем команды восстановления только после
+                        # успешной авторизации
+                        if need_restart_playback:
+                            logger.info(
+                                "🔄 Восстанавливаем воспроизведение после "
+                                "переподключения"
+                            )
+                            try:
+                                await self.send_command({"command": "stop"})
+                                await asyncio.sleep(1)
+                                await self.send_command({"command": "play"})
+                                logger.info("✅ Воспроизведение восстановлено")
+                            except Exception as e:
+                                logger.error(
+                                    f"❌ Ошибка при восстановлении "
+                                    f"воспроизведения: {e}"
+                                )
 
                         results = await asyncio.gather(
                             *self.tasks, return_exceptions=True
