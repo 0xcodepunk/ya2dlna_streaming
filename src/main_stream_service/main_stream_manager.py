@@ -325,6 +325,7 @@ class MainStreamManager:
         if not (ctx.last_track.id != track.id and track.playing):
             return
 
+        switch_started = time.monotonic()
         if track.type == "FmRadio":
             ctx.track_url = await self._station_controls.get_radio_url()
             logger.info(f"🎵 URL радиостанции: {ctx.track_url}")
@@ -333,6 +334,7 @@ class MainStreamManager:
                 track_id=track.id,
                 quality=settings.stream_quality,
             )
+        resolve_seconds = time.monotonic() - switch_started
 
         if ctx.track_url:
             start_position = 0.0
@@ -345,10 +347,16 @@ class MainStreamManager:
                     f"▶️ Трек уже играет на станции, продолжаем "
                     f"с {start_position:.0f}s"
                 )
+            send_started = time.monotonic()
             await self._send_track_to_stream_server(
                 ctx.track_url,
                 radio=track.type == "FmRadio",
                 start_position=start_position,
+            )
+            logger.info(
+                f"⏱ Переключение на {track.id}: ссылка "
+                f"{resolve_seconds:.2f}с, отправка "
+                f"{time.monotonic() - send_started:.2f}с"
             )
             ctx.last_track = track
         else:

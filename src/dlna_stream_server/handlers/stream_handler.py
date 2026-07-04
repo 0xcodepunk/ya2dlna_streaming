@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from logging import getLogger
 from typing import Any, Awaitable, Callable, Sequence
 
@@ -143,6 +144,8 @@ class StreamHandler:
                 # Счётчик таймаутов для снижения шума в логах
                 timeout_count = 0
                 total_bytes_sent = 0
+                serve_started = time.monotonic()
+                first_chunk_sent = False
                 while True:
                     # Выход после полной передачи stdout
                     if stdout.at_eof():
@@ -184,6 +187,13 @@ class StreamHandler:
                     empty_count = 0
                     # Сбрасываем счётчик при получении данных
                     timeout_count = 0
+                    if not first_chunk_sent:
+                        first_chunk_sent = True
+                        logger.info(
+                            f"⏱ Первый чанк клиенту через "
+                            f"{time.monotonic() - serve_started:.2f}с "
+                            f"после подключения"
+                        )
                     total_bytes_sent += len(chunk)
                     # Диагностика: логируем прогресс передачи данных
                     if total_bytes_sent % (1024 * 1024) == 0:  # Каждый МБ
@@ -249,14 +259,22 @@ class StreamHandler:
         self._ffmpeg.reset_restart_state()
 
         try:
+            play_started = time.monotonic()
             # Запускаем потоковую передачу (быстро, без ожидания)
             await self.start_ffmpeg_stream(yandex_url, radio, start_position)
+            ffmpeg_seconds = time.monotonic() - play_started
 
             track_url = self._local_stream_url(radio)
             logger.info(f"📡 Поток доступен по URL: {track_url}")
 
+            reattach_started = time.monotonic()
             await self._reattach_ruark(radio)
 
+            logger.info(
+                f"⏱ Запуск потока: FFmpeg {ffmpeg_seconds:.2f}с, "
+                f"привязка Ruark "
+                f"{time.monotonic() - reattach_started:.2f}с"
+            )
             logger.info("✅ Переключение трека завершено быстро!")
 
         except Exception as e:
