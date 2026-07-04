@@ -48,6 +48,8 @@ class YandexStationClient:
         self.authenticated = False
         self.running = True
         self.reconnect_required = False
+        # Сигнал о новом сообщении станции для событийного цикла
+        self.state_updated = asyncio.Event()
         self._connect_task: asyncio.Task[None] | None = None
         self._connected_at: float | None = None
         # Хранение фоновых задач
@@ -364,6 +366,7 @@ class YandexStationClient:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
                     self.queue.append(data)
+                    self.state_updated.set()
                     logger.debug("📨 Получено сообщение от станции")
 
                     # Если это ответ на команду, передаём в Future
@@ -509,6 +512,30 @@ class YandexStationClient:
         """Возвращает последнее сообщение из очереди или None, если пуста."""
         latest = self.queue[-1] if self.queue else None
         return latest
+
+    async def wait_for_state_update(self, timeout: float) -> bool:
+        """Ждёт нового сообщения станции, но не дольше timeout секунд.
+
+        Позволяет циклу стриминга реагировать на события станции
+        сразу, а не по таймеру; таймаут служит heartbeat'ом.
+
+        Args:
+            timeout (float): Максимальное время ожидания в секундах.
+        Returns:
+            bool: True, если пришло новое сообщение, False — по таймауту.
+        """
+        # Сообщение могло прийти, пока цикл обрабатывал предыдущее
+        if self.state_updated.is_set():
+            self.state_updated.clear()
+            return True
+
+        try:
+            await asyncio.wait_for(self.state_updated.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+
+        self.state_updated.clear()
+        return True
 
     async def _cancel_tasks(self):
         """Отмена всех активных задач, чтобы избежать зависших WebSocket."""

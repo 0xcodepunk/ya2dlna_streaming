@@ -10,7 +10,10 @@ from main_stream_service.main_stream_manager import (
 )
 from main_stream_service.yandex_music_api import YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
-from yandex_station.constants import RUARK_IDLE_VOLUME
+from yandex_station.constants import (
+    RUARK_IDLE_VOLUME,
+    STREAM_POLL_INTERVAL,
+)
 from yandex_station.models import Track
 from yandex_station.station_controls import YandexStationControls
 
@@ -83,8 +86,17 @@ def make_ruark(is_playing=True, volume=20):
 def make_manager(station_controls, ruark, track_url="http://track/url"):
     music_api = AsyncMock(spec=YandexMusicAPI)
     music_api.get_file_info.return_value = track_url
+    ws_client = MagicMock()
+
+    # Без событий цикл живёт на heartbeat; передача управления
+    # обязательна, иначе цикл монополизирует event loop в тестах
+    async def fake_wait(timeout):
+        await REAL_SLEEP(0)
+        return False
+
+    ws_client.wait_for_state_update = AsyncMock(side_effect=fake_wait)
     manager = MainStreamManager(
-        station_ws_client=MagicMock(),
+        station_ws_client=ws_client,
         station_controls=station_controls,
         ruark_controls=ruark,
         yandex_music_api=music_api,
@@ -305,3 +317,14 @@ async def test_stream_start_midtrack_continues_from_position(fast_sleep):
 
     first_call = send.call_args_list[0]
     assert first_call.kwargs["start_position"] == pytest.approx(120.0)
+
+
+async def test_loop_waits_for_station_events_with_heartbeat(fast_sleep):
+    track = make_track(progress=2.0)
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark())
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.1)
+
+    wait_mock = manager._ws_client.wait_for_state_update
+    wait_mock.assert_called_with(STREAM_POLL_INTERVAL)
