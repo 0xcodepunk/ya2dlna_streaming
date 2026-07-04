@@ -75,10 +75,23 @@ jobs:
 
       - name: Проверка живости сервисов
         run: |
-          sleep 10
-          curl -sf -o /dev/null http://localhost:8001/docs
-          curl -sf -o /dev/null http://localhost:8080/docs
-          echo "✅ Оба сервиса отвечают"
+          # Сервисы слушают адрес из APP_LOCAL_SERVER_HOST, а не localhost
+          HOST=$(grep -E '^APP_LOCAL_SERVER_HOST=' .env | cut -d= -f2 | tr -d ' \r')
+          PORT_API=$(grep -E '^APP_LOCAL_SERVER_PORT_API=' .env | cut -d= -f2 | tr -d ' \r')
+          PORT_DLNA=$(grep -E '^APP_LOCAL_SERVER_PORT_DLNA=' .env | cut -d= -f2 | tr -d ' \r')
+          for attempt in $(seq 1 12); do
+            if curl -sf -o /dev/null "http://${HOST}:${PORT_API}/docs" \
+              && curl -sf -o /dev/null "http://${HOST}:${PORT_DLNA}/docs"; then
+              echo "✅ Оба сервиса отвечают на ${HOST}"
+              exit 0
+            fi
+            echo "⏳ Попытка ${attempt}/12 — сервисы ещё не отвечают"
+            sleep 5
+          done
+          echo "❌ Сервисы не поднялись за 60 секунд"
+          docker compose ps
+          docker compose logs --tail 30
+          exit 1
 
       - name: Чистка неиспользуемых образов
         run: docker image prune -f
