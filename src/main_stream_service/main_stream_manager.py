@@ -145,7 +145,9 @@ class MainStreamManager:
                     logger.warning(
                         "⚠️ Нет данных о треке, пропускаем итерацию"
                     )
-                    await asyncio.sleep(STREAM_POLL_INTERVAL)
+                    await self._ws_client.wait_for_state_update(
+                        STREAM_POLL_INTERVAL
+                    )
                     continue
                 alice_state = await self._station_controls.get_alice_state()
 
@@ -161,7 +163,11 @@ class MainStreamManager:
                 ctx.last_progress_at = time.monotonic()
                 ctx.last_track_playing = track.playing
                 ctx.last_alice_state = alice_state
-                await asyncio.sleep(STREAM_POLL_INTERVAL)
+                # Новое сообщение станции будит цикл сразу,
+                # таймаут — heartbeat для проверок по времени
+                await self._ws_client.wait_for_state_update(
+                    STREAM_POLL_INTERVAL
+                )
 
         except asyncio.CancelledError:
             logger.info("🛑 Стриминг завершён по команде остановки")
