@@ -10,6 +10,7 @@ from core.config.settings import settings
 from main_stream_service.yandex_music_api import YandexMusicAPI
 from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
+from ruark_audio_system.volume_store import RuarkVolumeStore
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     PROGRESS_JUMP_THRESHOLD,
@@ -68,6 +69,7 @@ class MainStreamManager:
         self._yandex_music_api = yandex_music_api
         self._stream_server_url = settings.local_server_host
         self._ruark_volume = 0
+        self._volume_store = RuarkVolumeStore()
         self._stream_state_running = False
         self._tasks = []  # Хранение фоновых задач
 
@@ -102,6 +104,7 @@ class MainStreamManager:
         """Остановка всех стриминговых процессов."""
         logger.info("🛑 Остановка стриминга...")
         self._stream_state_running = False
+        await self._remember_ruark_volume()
         await self._ruark_controls.stop()
         await self._stop_stream_on_stream_server()
         await self._ruark_controls.set_volume(self._ruark_volume)
@@ -439,6 +442,21 @@ class MainStreamManager:
                 await asyncio.sleep(STREAMING_RESTART_DELAY)
                 logger.debug("🔄 Перезапуск потока после падения")
 
+    async def _remember_ruark_volume(self):
+        """Запоминает пользовательскую громкость Ruark для нового сеанса."""
+        try:
+            current_volume = await self._ruark_controls.get_volume()
+            # Уровень не выше приглушения — Ruark задакан речью Алисы,
+            # пользовательской громкостью остаётся сохранённый снапшот
+            if current_volume > RUARK_IDLE_VOLUME:
+                self._ruark_volume = current_volume
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Не удалось прочитать громкость Ruark, "
+                f"сохраняем последнюю известную: {e}"
+            )
+        self._volume_store.save(self._ruark_volume)
+
     async def _prepare_devices(self):
         logger.info("🔧 Подготовка устройств к стримингу...")
         await asyncio.sleep(1)
@@ -446,7 +464,18 @@ class MainStreamManager:
         await self._ruark_controls.get_session_id()
         if await self._ruark_controls.get_power_status() == "0":
             await self._ruark_controls.turn_power_on()
-        self._ruark_volume = await self._ruark_controls.get_volume()
+
+        saved_volume = self._volume_store.load()
+        if saved_volume is not None:
+            # Восстанавливаем громкость прошлого сеанса
+            await self._ruark_controls.set_volume(saved_volume)
+            self._ruark_volume = saved_volume
+            logger.info(
+                f"🔊 Восстановлена громкость Ruark прошлого сеанса: "
+                f"{saved_volume}"
+            )
+        else:
+            self._ruark_volume = await self._ruark_controls.get_volume()
 
     async def _send_track_to_stream_server(
         self,
