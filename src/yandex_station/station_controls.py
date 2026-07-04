@@ -1,6 +1,7 @@
 import asyncio
 import json
 from logging import getLogger
+from typing import Any
 
 from injector import inject
 
@@ -61,29 +62,33 @@ class YandexStationControls:
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке текстового сообщения: {e}")
 
-    async def get_current_state(self):
+    async def get_current_state(self) -> dict[str, Any] | None:
         """Получение текущего состояния станции."""
         try:
             state = await self._ws_client.get_latest_message()
-            # logger.info(f"🎵 Состояние станции: {state}")
             if state:
-                return state.get("state", {})
-            else:
-                return None
+                return dict(state.get("state", {}))
+            return None
         except Exception as e:
             logger.error(
                 f"❌ Ошибка при получении текущего состояния станции: {e}"
             )
+            return None
 
-    async def get_radio_url(self):
+    async def get_radio_url(self) -> str | None:
         """Получение URL радиостанции."""
         try:
             data = await self._ws_client.get_latest_message()
-            state = self._protobuf.loads(data["extra"]["appState"])
+            if not data:
+                return None
+            # Навигация по reverse-engineered структуре protobuf —
+            # технический шов, наружу уходит только str | None
+            state: Any = self._protobuf.loads(data["extra"]["appState"])
             metaw = json.loads(state[6][3][7])
-            item = self._protobuf.loads(metaw["scenario_meta"]["queue_item"])
-            url = item[7][1].decode()
-            return url
+            item: Any = self._protobuf.loads(
+                metaw["scenario_meta"]["queue_item"]
+            )
+            return str(item[7][1].decode())
 
         except Exception as e:
             logger.error(
@@ -92,58 +97,63 @@ class YandexStationControls:
             )
             return None
 
-    async def get_alice_state(self):
-        """Получение состояния Алиса."""
+    async def get_alice_state(self) -> str | None:
+        """Получение состояния Алисы (IDLE, LISTENING, SPEAKING...)."""
         try:
             state = await self._ws_client.get_latest_message()
-            if state:
-                return state.get("state", {}).get("aliceState", {})
+            if not state:
+                return None
+            alice_state = state.get("state", {}).get("aliceState")
+            return str(alice_state) if alice_state else None
         except Exception as e:
             logger.error(f"❌ Ошибка при получении состояния Алиса: {e}")
             return None
 
-    async def get_player_status(self) -> bool:
-        """Получение статуса плеера."""
+    async def get_player_status(self) -> dict[str, Any] | None:
+        """Получение состояния плеера с флагом playing."""
         try:
             state = await self.get_current_state()
-            play_status = state.get("playing", {})
-            player_state = state.get("playerState", {})
-            player_state["playing"] = play_status
+            if state is None:
+                return None
+            player_state = dict(state.get("playerState", {}))
+            player_state["playing"] = state.get("playing", False)
             return player_state
         except Exception as e:
             logger.error(f"❌ Ошибка при получении статуса плеера: {e}")
-            return False
+            return None
 
     async def get_current_track(self) -> Track | None:
         """Получение текущего трека."""
         try:
             player_state = await self.get_player_status()
-            # logger.info(f"🎵 Состояние плеера: {player_state}") # TODO: remove
-            if player_state:
-                return Track(
-                    id=player_state.get("id", 0),
-                    title=player_state.get("title", ""),
-                    type=player_state.get("type", ""),
-                    artist=player_state.get("subtitle", ""),
-                    duration=player_state.get("duration", 0),
-                    progress=player_state.get("progress", 0),
-                    playing=player_state.get("playing", False),
-                )
-            else:
+            if not player_state:
                 return None
+            return Track(
+                id=str(player_state.get("id", "0")),
+                title=str(player_state.get("title", "")),
+                type=str(player_state.get("type", "")),
+                artist=str(player_state.get("subtitle", "")),
+                duration=float(player_state.get("duration") or 0),
+                progress=float(player_state.get("progress") or 0),
+                playing=bool(player_state.get("playing", False)),
+            )
         except Exception as e:
             logger.error(f"❌ Ошибка при получении текущего трека: {e}")
+            return None
 
-    async def get_volume(self):
-        """Получение текущего уровня громкости."""
+    async def get_volume(self) -> float | None:
+        """Получение текущего уровня громкости (0.0–1.0)."""
         try:
             state = await self._ws_client.get_latest_message()
-            if state:
-                logger.info(
-                    f"🔊 Получение текущего уровня громкости Алиcы: "
-                    f"{state.get('state', {}).get('volume', {})}"
-                )
-                return state.get("state", {}).get("volume", {})
+            if not state:
+                return None
+            volume = state.get("state", {}).get("volume")
+            if volume is None:
+                return None
+            logger.info(
+                f"🔊 Получение текущего уровня громкости Алиcы: {volume}"
+            )
+            return float(volume)
         except Exception as e:
             logger.error(f"❌ Ошибка при получении громкости: {e}")
             return None
@@ -151,13 +161,10 @@ class YandexStationControls:
     async def set_default_volume(self):
         """Установка громкости по умолчанию."""
         logger.info("🔊 Установка громкости по умолчанию")
-        try:
-            self._volume = await self.get_volume()
-            logger.info(f"Громкость по умолчанию: {self._volume}")
-        except Exception as e:
-            logger.error(
-                f"❌ Ошибка при установке громкости по умолчанию: {e}"
-            )
+        volume = await self.get_volume()
+        if volume is not None:
+            self._volume = volume
+        logger.info(f"Громкость по умолчанию: {self._volume}")
 
     async def set_volume(self, volume: float):
         """Установка уровня громкости."""
@@ -182,7 +189,9 @@ class YandexStationControls:
         state = await self.get_alice_state()
 
         if state not in ALICE_ACTIVE_STATES:
-            self._volume = await self.get_volume()
+            volume = await self.get_volume()
+            if volume is not None:
+                self._volume = volume
             await self._ws_client.send_command(
                 {"command": "setVolume", "volume": 0}
             )
@@ -220,8 +229,13 @@ class YandexStationControls:
             return
         logger.info(f"🎧 Ждём {FADE_TIME}s перед fade out громкости")
         await asyncio.sleep(FADE_TIME)
-        self._volume = await self.get_volume()
-        start_volume = self._volume
+        start_volume = await self.get_volume()
+        if start_volume is None:
+            logger.warning(
+                "⚠️ Громкость станции неизвестна, fade out пропущен"
+            )
+            return
+        self._volume = start_volume
         volume = round(start_volume - (start_volume % step), 1)
 
         logger.info(

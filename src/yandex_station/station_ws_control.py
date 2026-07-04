@@ -6,7 +6,7 @@ import ssl
 import time
 import uuid
 from collections import deque
-from typing import Dict, Tuple
+from typing import Any
 
 import aiohttp
 from injector import inject
@@ -29,28 +29,46 @@ class YandexStationClient:
     def __init__(
         self,
         device_finder: DeviceFinder,
-        device_token: str = None,
+        device_token: str | None = None,
         buffer_size: int = 10,
     ):
         self.device_finder = device_finder
         self.device_token = device_token
-        self.queue = deque(maxlen=buffer_size)  # Очередь для сообщений станции
-        self.waiters: Dict[str, Tuple[asyncio.Future, float]] = {}
+        # Очередь для сообщений станции
+        self.queue: deque[dict[str, Any]] = deque(maxlen=buffer_size)
+        self.waiters: dict[
+            str, tuple[asyncio.Future[dict[str, Any]], float]
+        ] = {}
         self.lock = asyncio.Lock()
-        self.session: aiohttp.ClientSession = None
-        self.websocket: aiohttp.ClientWebSocketResponse = None
-        self.command_queue = asyncio.Queue()
+        self.session: aiohttp.ClientSession | None = None
+        self.websocket: aiohttp.ClientWebSocketResponse | None = None
+        self.command_queue: asyncio.Queue[dict[str, Any] | str] = (
+            asyncio.Queue()
+        )
         self.authenticated = False
         self.running = True
         self.reconnect_required = False
-        self._connect_task: asyncio.Task | None = None
-        self._connected_at = None
-        self.tasks = []  # Хранение фоновых задач
+        self._connect_task: asyncio.Task[None] | None = None
+        self._connected_at: float | None = None
+        # Хранение фоновых задач
+        self.tasks: list[asyncio.Task[None]] = []
 
         # Параметры станции заполняются в _ensure_device при запуске
         self.device_id: str | None = None
         self.platform: str | None = None
         self.uri: str | None = None
+
+    def _require_station_params(self) -> tuple[str, str, str]:
+        """Возвращает device_id, platform и uri найденной станции.
+
+        Raises:
+            StationNotFoundError: Если параметры ещё не заполнены.
+        """
+        if self.device_id is None or self.platform is None or self.uri is None:
+            raise StationNotFoundError(
+                "Параметры станции не заполнены — вызовите run_once()"
+            )
+        return self.device_id, self.platform, self.uri
 
     async def _ensure_device(self) -> None:
         """Находит станцию в сети, если она ещё не найдена.
@@ -62,14 +80,14 @@ class YandexStationClient:
             return
 
         logger.info("🔍 Поиск Яндекс Станции в сети...")
-        found = await asyncio.to_thread(self.device_finder.find_devices)
-        if not found:
+        await asyncio.to_thread(self.device_finder.find_devices)
+        device = self.device_finder.device
+        if not device:
             raise StationNotFoundError(
                 "Яндекс Станция не найдена в сети "
                 "(mDNS-сервис _yandexio._tcp.local.)"
             )
 
-        device = self.device_finder.device
         self.device_id = device["device_id"]
         self.platform = device["platform"]
         self.uri = f"wss://{device['host']}:{device['port']}"
@@ -88,6 +106,8 @@ class YandexStationClient:
 
     async def connect(self):
         """Подключение к WebSocket станции."""
+        device_id, platform, uri = self._require_station_params()
+
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
@@ -103,7 +123,7 @@ class YandexStationClient:
                 try:
                     if not self.device_token:
                         self.device_token = await get_device_token(
-                            self.device_id, self.platform
+                            device_id, platform
                         )
 
                     if (
@@ -127,9 +147,9 @@ class YandexStationClient:
 
                     async with aiohttp.ClientSession() as session:
                         self.session = session
-                        logger.info(f"🔄 Подключение к станции: {self.uri}")
+                        logger.info(f"🔄 Подключение к станции: {uri}")
                         self.websocket = await session.ws_connect(
-                            self.uri,
+                            uri,
                             ssl=ssl_context,
                             timeout=aiohttp.ClientWSTimeout(ws_close=10),
                         )
@@ -228,8 +248,9 @@ class YandexStationClient:
             while self.running:
                 await asyncio.sleep(30)
 
+                # running переключает другая задача, mypy этого не видит
                 if not self.running:
-                    logger.debug(
+                    logger.debug(  # type: ignore[unreachable]
                         "🛑 Клиент остановлен — выходим из "
                         "keep_alive_ws_connection"
                     )
@@ -289,7 +310,7 @@ class YandexStationClient:
 
             if response.get("requestId"):
                 request_id = response.get("requestId")
-                software_version = response.get("softwareVersion")
+                software_version = str(response.get("softwareVersion", ""))
                 logger.info(
                     f"🔑 Авторизация успешна: {request_id}\n"
                     f"🔖 Версия ПО: {software_version}"
@@ -315,10 +336,8 @@ class YandexStationClient:
     async def refresh_token(self):
         """Запрашивает новый токен и перезапускает WebSocket."""
         logger.info("🔄 Запрос нового токена...")
-        # Здесь вызываем функцию обновления токена
-        self.device_token = await get_device_token(
-            self.device_id, self.platform
-        )
+        device_id, platform, _ = self._require_station_params()
+        self.device_token = await get_device_token(device_id, platform)
         logger.info("✅ Новый токен получен. Переподключение...")
         await asyncio.sleep(1)
 
@@ -326,8 +345,13 @@ class YandexStationClient:
         """Постоянный поток сообщений от станции с защитой от зависания."""
         logger.info("📥 Поток приёма сообщений от станции запущен")
 
+        websocket = self.websocket
+        if websocket is None:
+            logger.warning("❌ WebSocket не инициализирован")
+            return
+
         while self.running:
-            if self.websocket.closed:
+            if websocket.closed:
                 logger.warning("❌ WebSocket внезапно закрыт")
                 self.reconnect_required = True
                 self.running = False
@@ -335,9 +359,7 @@ class YandexStationClient:
 
             try:
                 # Ждём сообщение от станции, не дольше 30 секунд
-                msg = await asyncio.wait_for(
-                    self.websocket.receive(), timeout=30
-                )
+                msg = await asyncio.wait_for(websocket.receive(), timeout=30)
 
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
@@ -444,7 +466,7 @@ class YandexStationClient:
                     logger.error(f"❌ Ошибка при отправке команды: {e}")
         logger.info("🛑 command_producer_handler завершен")
 
-    async def send_command(self, command: dict) -> dict:
+    async def send_command(self, command: dict[str, Any]) -> dict[str, Any]:
         """Отправляет команду в очередь на станцию.
 
         Ожидает именованный uuid ответ от станции на команду.
@@ -612,7 +634,11 @@ class YandexStationClient:
 
     def _check_duplicate_tasks(self):
         """Проверка на повторяющиеся задачи."""
-        names = [t.get_coro().__name__ for t in self.tasks if not t.done()]
+        names = [
+            getattr(t.get_coro(), "__name__", "unknown")
+            for t in self.tasks
+            if not t.done()
+        ]
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:
             logger.warning(f"⚠️ Найдены повторяющиеся задачи: {duplicates}")

@@ -49,20 +49,11 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_unreachable = true
 
-# TODO(этап 4): по мере выправления аннотаций убирать коды из
-# disable_error_code, затем включить check_untyped_defs,
-# disallow_any_generics и strict-режим по слоям.
-disable_error_code = [
-    "union-attr",
-    "assignment",
-    "attr-defined",
-    "return-value",
-    "var-annotated",
-    "call-arg",
-    "return",
-    "arg-type",
-]
+plugins = ["pydantic.mypy"]
+
+check_untyped_defs = true
+disallow_any_generics = true
 
 [[tool.mypy.overrides]]
-module = ["upnpclient", "yandex_music", "yandex_music.*"]
+module = ["upnpclient", "yandex_music"]
 ignore_missing_imports = true

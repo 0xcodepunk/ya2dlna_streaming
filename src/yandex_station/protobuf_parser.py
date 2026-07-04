@@ -1,4 +1,8 @@
 import base64
+from typing import Mapping, Union
+
+ProtoValue = Union[int, bytes, dict[int, "ProtoValue"], list["ProtoValue"]]
+ProtoDict = dict[int, ProtoValue]
 
 
 class Protobuf:
@@ -35,14 +39,15 @@ class Protobuf:
         data, pos = self._read(raw, pos, length)
         return data, pos
 
-    def _read_dict(self, raw: bytes, pos: int = 0) -> dict:
+    def _read_dict(self, raw: bytes, pos: int = 0) -> ProtoDict:
         """Парсит protobuf данные в словарь."""
-        res = {}
+        res: ProtoDict = {}
         while pos < len(raw):
             b, pos = self._read_varint(raw, pos)
             typ = b & 0b111
             tag = b >> 3
 
+            v: ProtoValue
             if typ == 0:  # VARINT
                 v, pos = self._read_varint(raw, pos)
             elif typ == 1:  # I64
@@ -58,13 +63,14 @@ class Protobuf:
             else:
                 raise NotImplementedError
 
-            if tag in res:
-                if isinstance(res[tag], list):
-                    res[tag] += [v]
-                else:
-                    res[tag] = [res[tag], v]
-            else:
+            if tag not in res:
                 res[tag] = v
+            else:
+                existing = res[tag]
+                if isinstance(existing, list):
+                    existing.append(v)
+                else:
+                    res[tag] = [existing, v]
 
         return res
 
@@ -75,14 +81,14 @@ class Protobuf:
             i >>= 7
         b.append(i)
 
-    def loads(self, raw: str | bytes) -> dict:
+    def loads(self, raw: str | bytes) -> ProtoDict:
         """Разбирает protobuf данные в словарь."""
         if isinstance(raw, str):
             raw = base64.b64decode(raw)
         return self._read_dict(raw)
 
-    def dumps(self, data: dict) -> bytes:
-        """Сериализует словарь в protobuf данные."""
+    def dumps(self, data: Mapping[int, object]) -> bytes:
+        """Сериализует словарь со строковыми значениями в protobuf."""
         b = bytearray()
         for tag, value in data.items():
             assert isinstance(tag, int)
