@@ -31,6 +31,8 @@ class FfmpegSupervisor:
         self._current_radio = False
         self._current_params: Sequence[str] | None = None
         self._on_restarted = on_restarted
+        # Фоновые задачи завершения старых процессов
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def process(self) -> asyncio.subprocess.Process | None:
@@ -65,9 +67,14 @@ class FfmpegSupervisor:
 
         logger.info(f"🎥 Запуск потоковой передачи с {url}")
 
-        # Запускаем фоновое завершение старого процесса (не блокирующе)
+        # Запускаем фоновое завершение старого процесса (не блокирующе);
+        # ссылка хранится, чтобы задачу не собрал GC и её можно было дождаться
         if old_process:
-            asyncio.create_task(self._terminate(old_process, old_monitor_task))
+            cleanup = asyncio.create_task(
+                self._terminate(old_process, old_monitor_task)
+            )
+            self._cleanup_tasks.add(cleanup)
+            cleanup.add_done_callback(self._cleanup_tasks.discard)
 
         self._current_url = url
         self._current_radio = radio
@@ -93,15 +100,19 @@ class FfmpegSupervisor:
 
     async def stop(self) -> None:
         """Останавливает процесс FFmpeg и все служебные задачи."""
-        await self._cancel_restart_task()
-
-        if self._monitor_task:
-            self._monitor_task.cancel()
-            try:
-                await self._monitor_task
-            except asyncio.CancelledError:
-                pass
+        # Монитор и перезапуск могут пересоздавать друг друга,
+        # поэтому гасим их в цикле до полной тишины
+        while self._monitor_task or self._restart_task:
+            monitor = self._monitor_task
             self._monitor_task = None
+            if monitor:
+                monitor.cancel()
+                try:
+                    await monitor
+                except asyncio.CancelledError:
+                    pass
+
+            await self._cancel_restart_task()
 
         if self._process:
             proc = self._process
@@ -115,15 +126,26 @@ class FfmpegSupervisor:
             logger.info("⏹ Останавливаем текущий поток FFmpeg...")
             await self._terminate(proc, None)
 
+        # Дожидаемся фоновых завершений старых процессов
+        if self._cleanup_tasks:
+            await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
+
     async def _cancel_restart_task(self) -> None:
         """Отменяет задачу перезапуска, если она выполняется."""
-        if self._restart_task:
-            self._restart_task.cancel()
-            try:
-                await self._restart_task
-            except asyncio.CancelledError:
-                pass
-            self._restart_task = None
+        task = self._restart_task
+        if task is None:
+            self._is_restarting = False
+            return
+        if task is asyncio.current_task():
+            # start() вызван из самой задачи перезапуска —
+            # отменять и ждать саму себя нельзя
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        self._restart_task = None
         self._is_restarting = False
 
     async def _monitor(self) -> None:
@@ -135,16 +157,17 @@ class FfmpegSupervisor:
         logger.info(f"🔍 Начинаем мониторинг FFmpeg процесса PID: {proc.pid}")
 
         try:
-            # Читаем stderr в отдельной задаче
+            # Читаем stderr в отдельной задаче; finally гарантирует её
+            # отмену, даже если сам монитор отменён во время proc.wait()
             stderr_task = asyncio.create_task(self._log_stderr(proc))
-
-            returncode = await proc.wait()
-
-            stderr_task.cancel()
             try:
-                await stderr_task
-            except asyncio.CancelledError:
-                pass
+                returncode = await proc.wait()
+            finally:
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except asyncio.CancelledError:
+                    pass
 
             if returncode == 0:
                 if self._current_radio:
