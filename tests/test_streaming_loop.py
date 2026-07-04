@@ -107,7 +107,7 @@ async def drive_streaming(manager, until, timeout=1.0):
 
 
 async def test_new_track_sent_to_stream_server(fast_sleep):
-    track = make_track()
+    track = make_track(progress=2.0)
     station = make_station_controls(track)
     manager = make_manager(station, make_ruark())
 
@@ -118,9 +118,11 @@ async def test_new_track_sent_to_stream_server(fast_sleep):
     manager._yandex_music_api.get_file_info.assert_called()
     call = manager._yandex_music_api.get_file_info.call_args
     assert call.kwargs["track_id"] == "42"
-    manager._send_track_to_stream_server.assert_any_call(
-        "http://track/url", radio=False
-    )
+    send_call = manager._send_track_to_stream_server.call_args_list[0]
+    assert send_call.args[0] == "http://track/url"
+    assert send_call.kwargs["radio"] is False
+    # Свежий трек (прогресс ниже порога) стартует с начала
+    assert send_call.kwargs["start_position"] == pytest.approx(0.0)
 
 
 async def test_radio_track_sent_with_radio_flag(fast_sleep):
@@ -197,21 +199,15 @@ async def test_track_repeat_resyncs_stream_from_start(fast_sleep):
     manager = make_manager(station, make_ruark())
     send = manager._send_track_to_stream_server
 
-    await drive_streaming(
-        manager,
-        until=lambda: any(
-            call.kwargs.get("start_position") is not None
+    def resync_happened():
+        return any(
+            call.kwargs.get("start_position") == pytest.approx(2.0)
             for call in send.call_args_list
-        ),
-    )
+        )
 
-    resync_calls = [
-        call
-        for call in send.call_args_list
-        if call.kwargs.get("start_position") is not None
-    ]
-    assert resync_calls, "ресинк не сработал"
-    assert resync_calls[0].kwargs["start_position"] == pytest.approx(2.0)
+    await drive_streaming(manager, until=resync_happened)
+
+    assert resync_happened(), "ресинк не сработал"
 
 
 async def test_seek_forward_resyncs_stream_at_new_position(fast_sleep):
@@ -220,20 +216,15 @@ async def test_seek_forward_resyncs_stream_at_new_position(fast_sleep):
     manager = make_manager(station, make_ruark())
     send = manager._send_track_to_stream_server
 
-    await drive_streaming(
-        manager,
-        until=lambda: any(
-            call.kwargs.get("start_position") is not None
+    def resync_happened():
+        return any(
+            call.kwargs.get("start_position") == pytest.approx(120.0)
             for call in send.call_args_list
-        ),
-    )
+        )
 
-    resync_calls = [
-        call
-        for call in send.call_args_list
-        if call.kwargs.get("start_position") is not None
-    ]
-    assert resync_calls[0].kwargs["start_position"] == pytest.approx(120.0)
+    await drive_streaming(manager, until=resync_happened)
+
+    assert resync_happened(), "ресинк не сработал"
 
 
 async def test_resume_after_pause_resyncs_stream(fast_sleep):
@@ -246,20 +237,15 @@ async def test_resume_after_pause_resyncs_stream(fast_sleep):
     manager = make_manager(station, make_ruark())
     send = manager._send_track_to_stream_server
 
-    await drive_streaming(
-        manager,
-        until=lambda: any(
-            call.kwargs.get("start_position") is not None
+    def resync_happened():
+        return any(
+            call.kwargs.get("start_position") == pytest.approx(51.0)
             for call in send.call_args_list
-        ),
-    )
+        )
 
-    resync_calls = [
-        call
-        for call in send.call_args_list
-        if call.kwargs.get("start_position") is not None
-    ]
-    assert resync_calls[0].kwargs["start_position"] == pytest.approx(51.0)
+    await drive_streaming(manager, until=resync_happened)
+
+    assert resync_happened(), "ресинк не сработал"
 
 
 async def test_normal_playback_does_not_trigger_resync(fast_sleep):
@@ -272,10 +258,6 @@ async def test_normal_playback_does_not_trigger_resync(fast_sleep):
 
     # Только первоначальная отправка трека, без ресинков
     assert send.call_count == 1
-    assert all(
-        call.kwargs.get("start_position") is None
-        for call in send.call_args_list
-    )
 
 
 async def test_resync_ignores_stale_progress_snapshot():
@@ -310,3 +292,16 @@ async def test_resync_detects_real_jump_with_fresh_snapshot():
     send = manager._send_track_to_stream_server
     send.assert_called_once()
     assert send.call_args.kwargs["start_position"] == pytest.approx(120.0)
+
+
+async def test_stream_start_midtrack_continues_from_position(fast_sleep):
+    """Стрим включён посреди трека — Ruark продолжает с позиции станции."""
+    track = make_track(progress=120.0)
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: send.called)
+
+    first_call = send.call_args_list[0]
+    assert first_call.kwargs["start_position"] == pytest.approx(120.0)

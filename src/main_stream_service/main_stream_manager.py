@@ -308,7 +308,11 @@ class MainStreamManager:
     async def _switch_to_new_track(
         self, track: Track, ctx: "_CycleContext"
     ) -> None:
-        """Отправляет новый трек на стрим сервер при смене id."""
+        """Отправляет новый трек на стрим сервер при смене id.
+
+        Если станция уже в глубине трека (стрим включили посреди
+        проигрывания), поток стартует с её текущей позиции.
+        """
         if not (ctx.last_track.id != track.id and track.playing):
             return
 
@@ -322,9 +326,20 @@ class MainStreamManager:
             )
 
         if ctx.track_url:
+            start_position = 0.0
+            if (
+                track.type != "FmRadio"
+                and track.progress > PROGRESS_JUMP_THRESHOLD
+            ):
+                start_position = track.progress
+                logger.info(
+                    f"▶️ Трек уже играет на станции, продолжаем "
+                    f"с {start_position:.0f}s"
+                )
             await self._send_track_to_stream_server(
                 ctx.track_url,
                 radio=track.type == "FmRadio",
+                start_position=start_position,
             )
             ctx.last_track = track
         else:
@@ -354,9 +369,14 @@ class MainStreamManager:
                     "перезапуск трека на стрим сервере"
                 )
                 if ctx.track_url:
+                    # Для трека продолжаем с текущей позиции станции,
+                    # а не с начала — иначе рассинхрон
                     await self._send_track_to_stream_server(
                         ctx.track_url,
                         radio=track.type == "FmRadio",
+                        start_position=(
+                            track.progress if track.type != "FmRadio" else 0.0
+                        ),
                     )
                 else:
                     logger.warning(
