@@ -15,10 +15,19 @@ class YandexMusicAPI:
 
     async def get_file_info(
         self,
-        track_id: int,
-        quality: str = None,
-        codecs: str = None,
-    ):
+        track_id: str | int,
+        quality: str | None = None,
+        codecs: str | None = None,
+    ) -> str | None:
+        """Возвращает прямую ссылку на файл трека.
+
+        Args:
+            track_id (str | int): Идентификатор трека.
+            quality (str | None): Желаемый битрейт в kbps.
+            codecs (str | None): Фильтр по кодеку.
+        Returns:
+            str | None: Прямая ссылка или None, если трек недоступен.
+        """
         track = await self._client.tracks(track_id)
         if not track:
             return None
@@ -37,12 +46,12 @@ class YandexMusicAPI:
         ]
 
         if quality:
-            quality = int(quality)
-            logger.info(f"🔍 Ищем ссылку с качеством: {quality} kbps")
+            quality_kbps = int(quality)
+            logger.info(f"🔍 Ищем ссылку с качеством: {quality_kbps} kbps")
             for info in candidates:
-                if info.bitrate_in_kbps == quality:
+                if info.bitrate_in_kbps == quality_kbps:
                     logger.info(f"✅ Найдена: {info.direct_link}")
-                    return info.direct_link
+                    return str(info.direct_link)
 
         # Если не указано качество — возвращаем лучшее
         best = max(candidates, key=lambda x: x.bitrate_in_kbps, default=None)
@@ -51,6 +60,6 @@ class YandexMusicAPI:
                 f"✅ Лучшее качество: {best.bitrate_in_kbps} "
                 f"kbps — {best.direct_link}"
             )
-            return best.direct_link
+            return str(best.direct_link)
 
         return None

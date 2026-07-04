@@ -12,7 +12,7 @@ logger = getLogger(__name__)
 router = APIRouter()
 
 # Словарь для отслеживания активных задач
-_active_tasks = {}
+_active_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 def _get_stream_handler(request: Request) -> StreamHandler:

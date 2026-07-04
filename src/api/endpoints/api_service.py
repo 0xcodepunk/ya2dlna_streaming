@@ -10,7 +10,7 @@ logger = getLogger(__name__)
 router = APIRouter()
 
 # Ссылка на задачу запуска, чтобы её не собрал сборщик мусора
-_start_task: asyncio.Task | None = None
+_start_task: asyncio.Task[None] | None = None
 
 
 def _get_manager(request: Request) -> MainStreamManager:

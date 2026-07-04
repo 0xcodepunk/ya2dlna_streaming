@@ -30,7 +30,7 @@ class MainStreamManager:
     _stream_state_running: bool
     _stream_server_url: str
     _ruark_volume: int
-    _tasks: list[asyncio.Task]
+    _tasks: list[asyncio.Task[None]]
 
     @inject
     def __init__(
@@ -114,7 +114,7 @@ class MainStreamManager:
                 playing=False,
             )
             stuck_track_count = 0
-            last_track_progress = 0
+            last_track_progress = 0.0
             volume_set_count = 0
             speak_count = 0
             track_url: str | None = None
@@ -175,16 +175,26 @@ class MainStreamManager:
                         and not await self._ruark_controls.is_playing()
                     ):
                         logger.info("🔁 Возобновляем воспроизведение радио")
-                        await self._send_track_to_stream_server(
-                            track_url=await self._station_controls.get_radio_url(),
-                            radio=True,
+                        radio_url = (
+                            await self._station_controls.get_radio_url()
                         )
-                        await asyncio.sleep(1)
+                        if radio_url:
+                            await self._send_track_to_stream_server(
+                                track_url=radio_url,
+                                radio=True,
+                            )
+                            await asyncio.sleep(1)
+                        else:
+                            logger.warning(
+                                "⚠️ Не удалось получить URL радиостанции"
+                            )
 
                     if track.id == last_track.id:
-                        track = (
+                        refreshed_track = (
                             await self._station_controls.get_current_track()
                         )
+                        if refreshed_track is not None:
+                            track = refreshed_track
 
                     if last_track.id != track.id and track.playing:
                         if track.type == "FmRadio":
@@ -199,11 +209,17 @@ class MainStreamManager:
                                     quality=settings.stream_quality,
                                 )
                             )
-                        await self._send_track_to_stream_server(
-                            track_url,
-                            radio=True if track.type == "FmRadio" else False,
-                        )
-                        last_track = track
+                        if track_url:
+                            await self._send_track_to_stream_server(
+                                track_url,
+                                radio=track.type == "FmRadio",
+                            )
+                            last_track = track
+                        else:
+                            logger.warning(
+                                f"⚠️ Не удалось получить URL для трека "
+                                f"{track.id}, повторим на следующей итерации"
+                            )
 
                     if speak_count > 0 and track.playing:
                         logger.info("🔁 Возвращаем громкость Ruark")
@@ -245,7 +261,8 @@ class MainStreamManager:
 
                     if (
                         (
-                            current_volume > 0
+                            current_volume is not None
+                            and current_volume > 0
                             and track.duration - track.progress > 10
                             and track.type != "FmRadio"
                         )
@@ -344,7 +361,7 @@ class MainStreamManager:
                 return response
 
     async def _recover_stuck_track(
-        self, track: Track, last_progress: int
+        self, track: Track, last_progress: float
     ) -> bool:
         logger.warning(
             "⚠️ Track.playing=False при IDLE, но прогресс меняется — "
@@ -358,14 +375,20 @@ class MainStreamManager:
 
             updated_track = await self._station_controls.get_current_track()
             if (
-                updated_track.id == track.id
+                updated_track is not None
+                and updated_track.id == track.id
                 and updated_track.progress > last_progress
             ):
                 logger.info("✅ Трек успешно перезапущен")
                 return True
         return False
 
-    def _log_current_track(self, track: Track, state: str, last_state: str):
+    def _log_current_track(
+        self,
+        track: Track,
+        state: str | None,
+        last_state: str | None,
+    ):
         logger.info(
             f"🎵 Сейчас играет: {track.id} - {track.artist} - "
             f"{track.title} - {track.progress}/{track.duration}, "

@@ -1,6 +1,7 @@
 import ipaddress
 from logging import getLogger
 from time import monotonic, sleep
+from typing import TypedDict
 
 from zeroconf import (
     ServiceBrowser,
@@ -12,11 +13,20 @@ from zeroconf import (
 logger = getLogger(__name__)
 
 
+class StationDevice(TypedDict):
+    """Параметры найденной Яндекс Станции."""
+
+    device_id: str
+    platform: str
+    host: str
+    port: int
+
+
 class DeviceFinder(ServiceListener):
     """Класс для поиска устройств Yandex Station в сети."""
 
     def __init__(self):
-        self.device = {}
+        self.device: StationDevice | None = None
         self.zeroconf = Zeroconf()
         self.browser: ServiceBrowser | None = None
 
@@ -56,8 +66,14 @@ class DeviceFinder(ServiceListener):
         """Обработчик событий для устройств Yandex Station."""
         try:
             info = zeroconf.get_service_info(service_type, name)
+            if info is None or not info.addresses or info.port is None:
+                logger.warning(f"⚠️ Неполные данные mDNS-сервиса {name}")
+                return
+
             properties = {
-                a.decode(): v.decode() for a, v in info.properties.items()
+                a.decode(): v.decode()
+                for a, v in info.properties.items()
+                if v is not None
             }
             logger.info(f"Properties: {properties}")
 

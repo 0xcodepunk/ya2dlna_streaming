@@ -9,7 +9,10 @@ import upnpclient
 
 from core.config.settings import settings
 from ruark_audio_system.constants import META_INFO
-from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
+from ruark_audio_system.exceptions import (
+    RuarkApiError,
+    RuarkDeviceNotFoundError,
+)
 
 SESSION_ID_REGEX = re.compile(r"<sessionId>(.*?)</sessionId>")
 POWER_STATUS_REGEX = re.compile(r"<value><u8>(.*?)</u8></value>")
@@ -359,76 +362,96 @@ class RuarkR5Controller:
         )
         logger.info(f"🎛 Выбран пресет: {preset_name}")
 
+    def _require_ip(self) -> str:
+        """Возвращает IP устройства или бросает ошибку, если оно не найдено.
+
+        Raises:
+            RuarkDeviceNotFoundError: Если устройство ещё не найдено в сети.
+        """
+        if self.ip is None:
+            raise RuarkDeviceNotFoundError(
+                f"Устройство '{self.device_name}' не найдено в сети — "
+                f"IP неизвестен, вызовите connect()"
+            )
+        return self.ip
+
     async def get_session_id(self) -> str:
-        """Получение session_id."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"http://{self.ip}/fsapi/CREATE_SESSION/"
-                    f"?pin={settings.ruark_pin}"
-                ) as response:
-                    content = await response.text()
-                    self._session_id = SESSION_ID_REGEX.search(content).group(
-                        1
-                    )
-                    return self._session_id
-        except Exception as e:
-            logger.error(f"Ошибка при получении session_id: {e}")
-            return ""
+        """Получение session_id.
+
+        Raises:
+            RuarkApiError: Если ответ fsapi не содержит sessionId.
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"http://{self._require_ip()}/fsapi/CREATE_SESSION/"
+                f"?pin={settings.ruark_pin}"
+            ) as response:
+                content = await response.text()
+
+        match = SESSION_ID_REGEX.search(content)
+        if not match:
+            raise RuarkApiError(
+                f"Ответ CREATE_SESSION без sessionId: {content[:200]}"
+            )
+        self._session_id = match.group(1)
+        return self._session_id
 
     async def get_power_status(self) -> str:
-        """Получение статуса питания."""
+        """Получение статуса питания ('1' — включено, '0' — выключено).
+
+        Raises:
+            RuarkApiError: Если ответ fsapi не содержит статус питания.
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"http://{self._require_ip()}/fsapi/GET/"
+                f"netRemote.sys.power?pin={settings.ruark_pin}"
+                f"&sid={self._session_id}"
+            ) as response:
+                content = await response.text()
+
+        match = POWER_STATUS_REGEX.search(content)
+        if not match:
+            raise RuarkApiError(
+                f"Ответ netRemote.sys.power без статуса: {content[:200]}"
+            )
+        status = match.group(1)
+        logger.info(f"🔌 Статус питания: {status}")
+        return status
+
+    async def _set_power(self, value: int) -> bool:
+        """Переключает питание и проверяет итоговый статус."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"http://{self.ip}/fsapi/GET/"
+                    f"http://{self._require_ip()}/fsapi/SET/"
                     f"netRemote.sys.power?pin={settings.ruark_pin}"
-                    f"&sid={self._session_id}"
+                    f"&sid={self._session_id}&value={value}"
                 ) as response:
-                    content = await response.text()
-                    status = POWER_STATUS_REGEX.search(content).group(1)
-                    logger.info(f"🔌 Статус питания: {status}")
-                    return status
-        except Exception as e:
-            logger.error(f"Ошибка при получении статуса питания: {e}")
-            return ""
+                    if response.status != 200:
+                        return False
+            return await self.get_power_status() == str(value)
+        except (
+            aiohttp.ClientError,
+            RuarkApiError,
+            RuarkDeviceNotFoundError,
+        ) as e:
+            logger.error(f"Ошибка при переключении питания: {e}")
+            return False
 
-    async def turn_power_on(self) -> str:
+    async def turn_power_on(self) -> bool:
         """Включение питания."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"http://{self.ip}/fsapi/SET/"
-                    f"netRemote.sys.power?pin={settings.ruark_pin}"
-                    f"&sid={self._session_id}&value=1"
-                ) as response:
-                    if response.status == 200:
-                        status = await self.get_power_status()
-                        if status == "1":
-                            logger.info("🔌 Питание включено")
-                            return True
-        except Exception as e:
-            logger.error(f"Ошибка при включении питания: {e}")
-            return False
+        success = await self._set_power(1)
+        if success:
+            logger.info("🔌 Питание включено")
+        return success
 
-    async def turn_power_off(self) -> str:
+    async def turn_power_off(self) -> bool:
         """Выключение питания."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"http://{self.ip}/fsapi/SET/"
-                    f"netRemote.sys.power?pin={settings.ruark_pin}"
-                    f"&sid={self._session_id}&value=0"
-                ) as response:
-                    if response.status == 200:
-                        status = await self.get_power_status()
-                        if status == "0":
-                            logger.info("🔌 Питание выключено")
-                            return True
-
-        except Exception as e:
-            logger.error(f"Ошибка при выключении питания: {e}")
-            return False
+        success = await self._set_power(0)
+        if success:
+            logger.info("🔌 Питание выключено")
+        return success
 
     def generate_metadata_with_fake_duration(self, uri: str) -> str:
         """Генерация DIDL-Lite метаданных с длительностью 999999 часов."""

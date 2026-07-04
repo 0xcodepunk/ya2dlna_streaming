@@ -29,10 +29,10 @@ class StreamHandler:
         self._current_url: str | None = None
         self._current_radio: bool = False
         self._current_ffmpeg_params: list[str] | None = None
-        self._monitor_task: asyncio.Task | None = None
+        self._monitor_task: asyncio.Task[None] | None = None
         self._restart_attempts = 0
         self._max_restart_attempts = 3
-        self._restart_task: asyncio.Task | None = None
+        self._restart_task: asyncio.Task[None] | None = None
         self._is_restarting = False
 
     async def execute_with_lock(self, func, *args, **kwargs):
@@ -119,9 +119,12 @@ class StreamHandler:
 
         Строки фильтруются по уровням важности.
         """
+        stderr = proc.stderr
+        if stderr is None:
+            return
         try:
             while True:
-                line = await proc.stderr.readline()
+                line = await stderr.readline()
                 if not line:
                     break
                 line_str = line.decode("utf-8", errors="ignore").strip()
@@ -207,7 +210,7 @@ class StreamHandler:
             )
             await asyncio.sleep(delay)
 
-            if self._current_radio:
+            if self._current_radio and self._radio_url:
                 # При перезапуске передаем исходный мастер-плейлист
                 logger.info("🚀 Используем быструю логику для рестарта радио")
                 await self.start_ffmpeg_stream(
@@ -413,8 +416,9 @@ class StreamHandler:
         или не даёт данных — поток закрывается.
         """
         proc = self._ffmpeg_process
-        if not proc:
+        if not proc or proc.stdout is None:
             raise HTTPException(status_code=404, detail="Поток не запущен")
+        stdout = proc.stdout
 
         async def generate():
             try:
@@ -424,7 +428,7 @@ class StreamHandler:
                 total_bytes_sent = 0
                 while True:
                     # Выход после полной передачи stdout
-                    if proc.stdout.at_eof():
+                    if stdout.at_eof():
                         logger.info(
                             "📭 FFmpeg stdout закрылся (EOF) — поток завершён"
                         )
@@ -432,7 +436,7 @@ class StreamHandler:
 
                     try:
                         chunk = await asyncio.wait_for(
-                            proc.stdout.read(4096),
+                            stdout.read(4096),
                             timeout=15,  # Увеличили с 5 до 15 секунд
                         )
                     except asyncio.TimeoutError:
