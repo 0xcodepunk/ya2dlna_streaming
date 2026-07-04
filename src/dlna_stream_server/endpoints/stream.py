@@ -21,9 +21,7 @@ _active_tasks = {}
 
 
 async def _handle_stream_task(
-        yandex_url: str,
-        task_id: str,
-        radio: bool = False
+    yandex_url: str, task_id: str, radio: bool = False
 ):
     """Обработчик задачи потока с логированием ошибок."""
     try:
@@ -58,7 +56,7 @@ async def set_stream(yandex_url: str, radio: bool = False):
     return {
         "message": "Стрим запущен",
         "stream_url": yandex_url,
-        "task_id": task_id
+        "task_id": task_id,
     }
 
 

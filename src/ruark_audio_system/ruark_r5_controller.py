@@ -21,28 +21,26 @@ SeekUnitType = Literal["REL_TIME", "ABS_TIME", "ABS_COUNT", "TRACK_NR"]
 
 
 class RuarkR5Controller:
-    """Класс для управления устройством Ruark R5"""
+    """Класс для управления устройством Ruark R5."""
 
     _session_id: str
 
-    def __init__(
-            self,
-            device_name: str = "Ruark R5"
-    ) -> None:
-        """Инициализация и поиск устройства Ruark R5 в сети"""
+    def __init__(self, device_name: str = "Ruark R5") -> None:
+        """Инициализация и поиск устройства Ruark R5 в сети."""
         self.device_name = device_name
         self.refresh_device()
         self.print_available_services()
 
     def refresh_device(self) -> None:
-        """Обновление устройства"""
+        """Обновление устройства."""
         logger.info("🔄 Обновление устройства")
         self.device: Optional[upnpclient.Device] = self.find_device(
             device_name=self.device_name
         )
         if not self.device:
-            logger.warning(f"⚠ Устройство '{self.device.friendly_name}' "
-                           f"не найдено в сети!")
+            logger.warning(
+                f"⚠ Устройство '{self.device_name}' не найдено в сети!"
+            )
             return
 
         self.ip = self.get_device_ip()
@@ -58,11 +56,13 @@ class RuarkR5Controller:
         self.rendering_control = self.services.get(
             "urn:schemas-upnp-org:service:RenderingControl:1"
         )
-        logger.info(f"Устройство обновлено: {self.device.friendly_name} "
-                    f"({self.device.location})")
+        logger.info(
+            f"Устройство обновлено: {self.device.friendly_name} "
+            f"({self.device.location})"
+        )
 
     def find_device(self, device_name: str) -> Optional[upnpclient.Device]:
-        """Находит устройство по имени"""
+        """Находит устройство по имени."""
         logger.info(f"Начинаем поиск устройства: {device_name}")
         try:
             devices = upnpclient.discover()
@@ -92,117 +92,114 @@ class RuarkR5Controller:
             return None
 
     def get_device_ip(self) -> Optional[str]:
-        """Получает IP-адрес устройства"""
+        """Получает IP-адрес устройства."""
         if self.device:
             parsed_url = urllib.parse.urlparse(self.device.location)
             return parsed_url.hostname
         return None
 
     def print_available_services(self):
-        """Выводит список всех поддерживаемых сервисов"""
+        """Выводит список всех поддерживаемых сервисов."""
         logger.info("\n📡 Доступные UPnP сервисы:")
         for service in self.services:
             logger.info(f" - {service}")
 
     #  ConnectionManager
     async def get_protocol_info(self, connection_manager) -> Dict[str, str]:
-        """Получение списка поддерживаемых форматов"""
+        """Получение списка поддерживаемых форматов."""
         return await asyncio.to_thread(self.connection_manager.GetProtocolInfo)
 
     async def get_current_connection_ids(self) -> List[str]:
-        """Получение списка активных соединений"""
-        return (await asyncio.to_thread(
-            self.connection_manager.GetCurrentConnectionIDs
-        ))["ConnectionIDs"]
+        """Получение списка активных соединений."""
+        return (
+            await asyncio.to_thread(
+                self.connection_manager.GetCurrentConnectionIDs
+            )
+        )["ConnectionIDs"]
 
     async def get_current_connection_info(
         self, connection_id: int
     ) -> Dict[str, Any]:
-        """Получение информации о соединении"""
+        """Получение информации о соединении."""
         return await asyncio.to_thread(
             self.connection_manager.GetCurrentConnectionInfo,
-            ConnectionID=connection_id
+            ConnectionID=connection_id,
         )
 
     #   AVTransport
     async def set_av_transport_uri(self, uri: str) -> None:
-        """Установка нового потока"""
+        """Установка нового потока."""
         metadata = self.generate_metadata_with_fake_duration(uri)
         await asyncio.to_thread(
             self.av_transport.SetAVTransportURI,
             InstanceID=0,
             CurrentURI=uri,
-            CurrentURIMetaData=metadata
+            CurrentURIMetaData=metadata,
         )
         logger.info(f"🎵 Поток установлен: {uri}")
 
     async def play(self) -> None:
-        """Запуск воспроизведения"""
+        """Запуск воспроизведения."""
         await asyncio.to_thread(
             self.av_transport.Play, InstanceID=0, Speed="1"
         )
         logger.info("▶ Воспроизведение запущено")
 
     async def pause(self) -> None:
-        """Приостановка воспроизведения"""
+        """Приостановка воспроизведения."""
         await asyncio.to_thread(self.av_transport.Pause, InstanceID=0)
         logger.info("⏸ Воспроизведение приостановлено")
 
     async def stop(self) -> None:
-        """Остановка воспроизведения"""
+        """Остановка воспроизведения."""
         playing = await self.is_playing()
         if playing:
             await asyncio.to_thread(self.av_transport.Stop, InstanceID=0)
             logger.info("⏹ Воспроизведение остановлено")
 
     async def next_track(self) -> None:
-        """Переключение на следующий трек"""
+        """Переключение на следующий трек."""
         await asyncio.to_thread(self.av_transport.Next, InstanceID=0)
         logger.info("⏭ Следующий трек")
 
     async def previous_track(self) -> None:
-        """Переключение на предыдущий трек"""
+        """Переключение на предыдущий трек."""
         await asyncio.to_thread(self.av_transport.Previous, InstanceID=0)
         logger.info("⏮ Предыдущий трек")
 
     async def seek(self, target: str, unit: SeekUnitType = "REL_TIME") -> None:
-        """Перемотка на указанное время (например, '00:01:30')"""
+        """Перемотка на указанное время (например, '00:01:30')."""
         await asyncio.to_thread(
-            self.av_transport.Seek,
-            InstanceID=0,
-            Unit=unit,
-            Target=target
+            self.av_transport.Seek, InstanceID=0, Unit=unit, Target=target
         )
         logger.info(f"⏩ Перемотка на {target}")
 
     async def get_media_info(self) -> Dict[str, Any]:
-        """Получение информации о текущем медиафайле"""
+        """Получение информации о текущем медиафайле."""
         return await asyncio.to_thread(
             self.av_transport.GetMediaInfo, InstanceID=0
         )
 
     async def get_position_info(self) -> Dict[str, Any]:
-        """Получение информации о текущей позиции воспроизведения"""
+        """Получение информации о текущей позиции воспроизведения."""
         return await asyncio.to_thread(
             self.av_transport.GetPositionInfo, InstanceID=0
         )
 
     async def get_transport_info(self) -> Dict[str, Any]:
-        """Получение информации о состоянии транспорта"""
+        """Получение информации о состоянии транспорта."""
         return await asyncio.to_thread(
-            self.av_transport.GetTransportInfo,
-            InstanceID=0
+            self.av_transport.GetTransportInfo, InstanceID=0
         )
 
     async def get_transport_settings(self) -> Dict[str, Any]:
-        """Получение настроек воспроизведения"""
+        """Получение настроек воспроизведения."""
         return await asyncio.to_thread(
-            self.av_transport.GetTransportSettings,
-            InstanceID=0
+            self.av_transport.GetTransportSettings, InstanceID=0
         )
 
     async def is_playing(self, timeout: float = 5.0) -> bool:
-        """Проверка, воспроизводится ли что-либо, с защитой по таймауту"""
+        """Проверка, воспроизводится ли что-либо, с защитой по таймауту."""
         try:
             ruark_state = await asyncio.wait_for(
                 self.get_transport_info(), timeout=timeout
@@ -216,66 +213,61 @@ class RuarkR5Controller:
             return False
 
     async def set_play_mode(self, mode: PlayModeType) -> None:
-        """Установка режима воспроизведения"""
+        """Установка режима воспроизведения."""
         await asyncio.to_thread(
-            self.av_transport.SetPlayMode,
-            InstanceID=0,
-            NewPlayMode=mode
+            self.av_transport.SetPlayMode, InstanceID=0, NewPlayMode=mode
         )
         logger.info(f"🔄 Установлен режим воспроизведения: {mode}")
 
     #   RenderingControl
     async def get_volume(self) -> int:
-        """Получение текущего уровня громкости"""
+        """Получение текущего уровня громкости."""
         result = await asyncio.to_thread(
-            self.rendering_control.GetVolume,
-            InstanceID=0,
-            Channel="Master"
+            self.rendering_control.GetVolume, InstanceID=0, Channel="Master"
         )
         return result["CurrentVolume"]
 
     async def set_volume(self, volume: int) -> None:
-        """Установка громкости (0-100)"""
+        """Установка громкости (0-100)."""
         await asyncio.to_thread(
             self.rendering_control.SetVolume,
             InstanceID=0,
             Channel="Master",
-            DesiredVolume=volume
+            DesiredVolume=volume,
         )
         logger.info(f"🔊 Громкость установлена на {volume}")
 
     async def get_mute(self) -> bool:
-        """Получение состояния mute"""
+        """Получение состояния mute."""
         result = await asyncio.to_thread(
-            self.rendering_control.GetMute,
-            InstanceID=0,
-            Channel="Master"
+            self.rendering_control.GetMute, InstanceID=0, Channel="Master"
         )
         return bool(result["CurrentMute"])
 
     async def set_mute(self, mute: bool) -> None:
-        """Отключение/включение звука"""
+        """Отключение/включение звука."""
         await asyncio.to_thread(
             self.rendering_control.SetMute,
             InstanceID=0,
             Channel="Master",
-            DesiredMute=int(mute)
+            DesiredMute=int(mute),
         )
         logger.info("🔇 Звук отключен" if mute else "🔊 Звук включен")
 
     async def fade_out_ruark(
-            self,
-            start_volume: int,
-            min_volume: int = 2,
-            step: int = 6,
-            delay: float = 0.1
+        self,
+        start_volume: int,
+        min_volume: int = 2,
+        step: int = 6,
+        delay: float = 0.1,
     ):
-        """Плавное уменьшение громкости Ruark в несколько шагов"""
+        """Плавное уменьшение громкости Ruark в несколько шагов."""
         volume = start_volume - start_volume % 2
 
         logger.info(
             f"🔉 Плавное снижение громкости Ruark: "
-            f"{volume} ➝ {min_volume} шагом {step}")
+            f"{volume} ➝ {min_volume} шагом {step}"
+        )
 
         try:
             for v in range(volume, min_volume - 1, -step):
@@ -289,24 +281,23 @@ class RuarkR5Controller:
             logger.error(f"❌ Ошибка при снижении громкости Ruark: {e}")
 
     async def list_presets(self) -> str:
-        """Получение списка пресетов"""
+        """Получение списка пресетов."""
         result = await asyncio.to_thread(
-            self.rendering_control.ListPresets,
-            InstanceID=0
+            self.rendering_control.ListPresets, InstanceID=0
         )
         return result["CurrentPresetNameList"]
 
     async def select_preset(self, preset_name: str) -> None:
-        """Выбор пресета"""
+        """Выбор пресета."""
         await asyncio.to_thread(
             self.rendering_control.SelectPreset,
             InstanceID=0,
-            PresetName=preset_name
+            PresetName=preset_name,
         )
         logger.info(f"🎛 Выбран пресет: {preset_name}")
 
     async def get_session_id(self) -> str:
-        """Получение session_id"""
+        """Получение session_id."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -314,8 +305,8 @@ class RuarkR5Controller:
                     f"?pin={settings.ruark_pin}"
                 ) as response:
                     content = await response.text()
-                    self._session_id = (
-                        SESSION_ID_REGEX.search(content).group(1)
+                    self._session_id = SESSION_ID_REGEX.search(content).group(
+                        1
                     )
                     return self._session_id
         except Exception as e:
@@ -323,7 +314,7 @@ class RuarkR5Controller:
             return ""
 
     async def get_power_status(self) -> str:
-        """Получение статуса питания"""
+        """Получение статуса питания."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -340,7 +331,7 @@ class RuarkR5Controller:
             return ""
 
     async def turn_power_on(self) -> str:
-        """Включение питания"""
+        """Включение питания."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -358,7 +349,7 @@ class RuarkR5Controller:
             return False
 
     async def turn_power_off(self) -> str:
-        """Выключение питания"""
+        """Выключение питания."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -377,12 +368,12 @@ class RuarkR5Controller:
             return False
 
     def generate_metadata_with_fake_duration(self, uri: str) -> str:
-        """Генерация DIDL-Lite метаданных с длительностью 999999 часов"""
+        """Генерация DIDL-Lite метаданных с длительностью 999999 часов."""
         logger.info(f"🔊 Генерируем метаданные для {uri}")
         return META_INFO.format(url=uri)
 
     async def print_status(self) -> None:
-        """Вывод текущего состояния устройства"""
+        """Вывод текущего состояния устройства."""
         logger.info("🎶 Текущее состояние Ruark R5:")
         volume = await self.get_volume()
         mute = await self.get_mute()

@@ -1,0 +1,26 @@
+[flake8]
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    build,
+    dist,
+    cache,
+    temp*.py
+max-line-length = 79
+select = E,F,W,B,D,I
+isort_settings_path = .
+docstring-convention = pep257
+per-file-ignores =
+    __init__.py:D100,D104
+    **/__init__.py:D100,D104
+ignore =
+    E501
+    D100,D101,D102,D103,D104,D105,D106,D107
+    D200,D202,D203,D204,D212,D213
+    W503,W504
+    B008
+
+extend-select =
+    D205,D400

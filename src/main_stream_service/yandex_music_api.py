@@ -1,13 +1,12 @@
 import logging
 
-
 from yandex_music import ClientAsync
 
 logger = logging.getLogger(__name__)
 
 
 class YandexMusicAPI:
-    """Класс для работы с API Яндекс.Музыки"""
+    """Класс для работы с API Яндекс.Музыки."""
 
     _client: ClientAsync
 
@@ -32,7 +31,8 @@ class YandexMusicAPI:
             return None
 
         candidates = [
-            info for info in download_info
+            info
+            for info in download_info
             if not codecs or info.codec == codecs
         ]
 

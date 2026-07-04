@@ -4,8 +4,10 @@ import uvicorn
 from fastapi import FastAPI
 
 from core.config.settings import settings
-from core.logging.setup import setup_logging  # noqa: F401
+from core.logging.setup import setup_logging
 from dlna_stream_server.endpoints.routers import main_router
+
+setup_logging()
 
 logger = getLogger(__name__)
 

@@ -53,7 +53,7 @@ class YandexStationClient:
         )
 
     async def run_once(self):
-        """Гарантированный однократный запуск WebSocket"""
+        """Гарантированный однократный запуск WebSocket."""
         if self._connect_task and not self._connect_task.done():
             logger.warning("⚠️ WebSocket уже запущен")
             return
@@ -173,28 +173,33 @@ class YandexStationClient:
                 except aiohttp.ClientError as e:
                     logger.error(f"❌ WebSocket ошибка: {e}")
 
+                except Exception as e:
+                    logger.error(
+                        f"❌ Непредвиденная ошибка WebSocket-клиента: {e}"
+                    )
+
                 finally:
                     await self._cancel_tasks()
 
-                    if not self.running and not self.reconnect_required:
-                        logger.info(
-                            "🛑 WebSocket-клиент завершает работу — "
-                            "переподключение не требуется"
-                        )
-                        break
-
+                if not self.running and not self.reconnect_required:
                     logger.info(
-                        f"🔄 Переподключение через "
-                        f"{SOCKET_RECONNECT_DELAY} секунд..."
+                        "🛑 WebSocket-клиент завершает работу — "
+                        "переподключение не требуется"
                     )
-                    await asyncio.sleep(SOCKET_RECONNECT_DELAY)
+                    break
+
+                logger.info(
+                    f"🔄 Переподключение через "
+                    f"{SOCKET_RECONNECT_DELAY} секунд..."
+                )
+                await asyncio.sleep(SOCKET_RECONNECT_DELAY)
 
         except asyncio.CancelledError:
             logger.info("🛑 connect() прерван через CancelledError")
             raise
 
     async def keep_alive_ws_connection(self):
-        """Поддерживает WebSocket-соединение активным"""
+        """Поддерживает WebSocket-соединение активным."""
         try:
             while self.running:
                 await asyncio.sleep(30)
@@ -235,7 +240,7 @@ class YandexStationClient:
             logger.info("🛑 Задача keep_alive_ws_connection отменена")
 
     async def clean_expired_futures(self, timeout: float = 15) -> None:
-        """Удаляет зависшие Future из self.waiters"""
+        """Удаляет зависшие Future из self.waiters."""
         while self.running:
             now = time.time()
             expired = []
@@ -307,8 +312,7 @@ class YandexStationClient:
             try:
                 # Ждём сообщение от станции, не дольше 30 секунд
                 msg = await asyncio.wait_for(
-                    self.websocket.receive(),
-                    timeout=30
+                    self.websocket.receive(), timeout=30
                 )
 
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -337,16 +341,16 @@ class YandexStationClient:
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     logger.warning(
-                        f"❌ WebSocket закрыт станцией (CLOSED): "
-                        f"{msg}"
+                        f"❌ WebSocket закрыт станцией (CLOSED): " f"{msg}"
                     )
-                    total_seconds = time.monotonic() - self._connected_at
-                    minutes = total_seconds // 60
-                    seconds = total_seconds % 60
-                    logger.warning(
-                        f"⌛️ Время работы WebSocket: {minutes:.0f} минут, "
-                        f"секунд: {seconds:.1f}"
-                    )
+                    if self._connected_at is not None:
+                        total_seconds = time.monotonic() - self._connected_at
+                        minutes = total_seconds // 60
+                        seconds = total_seconds % 60
+                        logger.warning(
+                            f"⌛️ Время работы WebSocket: {minutes:.0f} минут, "
+                            f"секунд: {seconds:.1f}"
+                        )
                     self.reconnect_required = True
                     self.running = False
                     break
@@ -387,8 +391,7 @@ class YandexStationClient:
         while self.running:
             try:
                 command = await asyncio.wait_for(
-                    self.command_queue.get(),
-                    timeout=30
+                    self.command_queue.get(), timeout=30
                 )
             except asyncio.TimeoutError:
                 logger.debug("⏱ Очередь пуста, ждём новые команды...")
@@ -406,8 +409,7 @@ class YandexStationClient:
 
                 try:
                     await asyncio.wait_for(
-                        self.websocket.send_json(command),
-                        timeout=5
+                        self.websocket.send_json(command), timeout=5
                     )
                     logger.info(f"✅ Команда отправлена на станцию: {command}")
                 except asyncio.TimeoutError:
@@ -419,8 +421,9 @@ class YandexStationClient:
         logger.info("🛑 command_producer_handler завершен")
 
     async def send_command(self, command: dict) -> dict:
-        """Отправляет команды в очередь для отправки на станцию
-        и ожидает именованный uuid ответ от станции на команду.
+        """Отправляет команду в очередь на станцию.
+
+        Ожидает именованный uuid ответ от станции на команду.
         """
         if not self.running:
             logger.warning(
@@ -457,9 +460,7 @@ class YandexStationClient:
             self.waiters.pop(request_id, None)  # Чистим Future после обработки
 
     async def get_latest_message(self):
-        """Возвращает самое последнее сообщение из очереди или None,
-        если очередь пуста.
-        """
+        """Возвращает последнее сообщение из очереди или None, если пуста."""
         latest = self.queue[-1] if self.queue else None
         return latest
 
@@ -531,20 +532,24 @@ class YandexStationClient:
             except asyncio.CancelledError:
                 logger.info("✅ Задача подключения к станции отменена")
             except Exception as e:
-                logger.error(f"❌ Ошибка при остановке задачи подключения: {e}")
+                logger.error(
+                    f"❌ Ошибка при остановке задачи подключения: {e}"
+                )
             self._connect_task = None
             logger.info("✅ Задача подключения к станции отменена")
 
     def _log_software_version(self, software_version: str):
         """Логирует версию ПО станции в файл, если она изменилась."""
         try:
-            version_log_file_path = os.path.abspath(os.path.join(
-                os.path.dirname(__file__),
-                '..',
-                '..',
-                'logs',
-                'firmware_version.log'
-            ))
+            version_log_file_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "..",
+                    "logs",
+                    "firmware_version.log",
+                )
+            )
             os.makedirs(os.path.dirname(version_log_file_path), exist_ok=True)
             current_version = ""
             if os.path.exists(version_log_file_path):
@@ -554,7 +559,7 @@ class YandexStationClient:
                         # Берем последнюю строку и извлекаем версию
                         last_line = lines[-1].strip()
                         if last_line:
-                            current_version = last_line.split(' - ')[0]
+                            current_version = last_line.split(" - ")[0]
 
             if current_version != software_version:
                 with open(version_log_file_path, "a") as file:
@@ -569,7 +574,7 @@ class YandexStationClient:
             logger.error(f"❌ Ошибка при записи версии ПО в лог: {e}")
 
     def _fail_all_pending_futures(self, error: Exception):
-        """Завершает все зависшие Future"""
+        """Завершает все зависшие Future."""
         count = 0
         for request_id, (future, _) in list(self.waiters.items()):
             if not future.done():
@@ -582,7 +587,7 @@ class YandexStationClient:
             )
 
     def _check_duplicate_tasks(self):
-        """Проверка на повторяющиеся задачи"""
+        """Проверка на повторяющиеся задачи."""
         names = [t.get_coro().__name__ for t in self.tasks if not t.done()]
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:

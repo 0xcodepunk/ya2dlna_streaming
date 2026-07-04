@@ -13,7 +13,8 @@ from yandex_station.station_ws_control import YandexStationClient
 
 
 class MainStreamManagerModule(Module):
-    """Класс для управления зависимостями MainStreamManager"""
+    """Класс для управления зависимостями MainStreamManager."""
+
     @singleton
     @provider
     def provide_main_stream_manager(
@@ -21,18 +22,19 @@ class MainStreamManagerModule(Module):
         station_ws_client: YandexStationClient,
         station_controls: YandexStationControls,
         ruark_controls: RuarkR5Controller,
-        yandex_music_api: YandexMusicAPI
+        yandex_music_api: YandexMusicAPI,
     ) -> MainStreamManager:
         return MainStreamManager(
             station_ws_client=station_ws_client,
             station_controls=station_controls,
             ruark_controls=ruark_controls,
-            yandex_music_api=yandex_music_api
+            yandex_music_api=yandex_music_api,
         )
 
 
 class DeviceFinderModule(Module):
-    """Класс для управления зависимостями DeviceFinder"""
+    """Класс для управления зависимостями DeviceFinder."""
+
     @singleton
     @provider
     def provide_device_finder(self) -> DeviceFinder:
@@ -40,7 +42,8 @@ class DeviceFinderModule(Module):
 
 
 class YandexStationClientModule(Module):
-    """Класс для управления зависимостями Yandex Station Client"""
+    """Класс для управления зависимостями Yandex Station Client."""
+
     @singleton
     @provider
     def provide_yandex_station_client(self) -> YandexStationClient:
@@ -48,19 +51,19 @@ class YandexStationClientModule(Module):
 
 
 class YandexStationControlsModule(Module):
-    """Класс для управления зависимостями Yandex Station Controls"""
+    """Класс для управления зависимостями Yandex Station Controls."""
+
     @singleton
     @provider
     def provide_yandex_station_controls(
-        self,
-        ws_client: YandexStationClient,
-        protobuf: Protobuf
+        self, ws_client: YandexStationClient, protobuf: Protobuf
     ) -> YandexStationControls:
         return YandexStationControls(ws_client, protobuf)
 
 
 class YandexMusicAPIModule(Module):
-    """Класс для управления зависимостями Yandex Music API"""
+    """Класс для управления зависимостями Yandex Music API."""
+
     @singleton
     @provider
     def provide_yandex_music_api(self) -> YandexMusicAPI:
@@ -69,7 +72,8 @@ class YandexMusicAPIModule(Module):
 
 
 class RuarkR5ControllerModule(Module):
-    """Класс для управления зависимостями RuarkR5Controller"""
+    """Класс для управления зависимостями RuarkR5Controller."""
+
     @singleton
     @provider
     def provide_ruark_r5_controller(
@@ -79,7 +83,8 @@ class RuarkR5ControllerModule(Module):
 
 
 class StreamHandlerModule(Module):
-    """Класс для управления зависимостями StreamHandler"""
+    """Класс для управления зависимостями StreamHandler."""
+
     @singleton
     @provider
     def provide_stream_handler(
@@ -89,7 +94,8 @@ class StreamHandlerModule(Module):
 
 
 class ProtobufModule(Module):
-    """Класс для управления зависимостями Protobuf"""
+    """Класс для управления зависимостями Protobuf."""
+
     @singleton
     @provider
     def provide_protobuf(self) -> Protobuf:

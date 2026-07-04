@@ -7,8 +7,11 @@ from injector import inject
 from core.config.settings import settings
 from main_stream_service.yandex_music_api import YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
-from yandex_station.constants import (ALICE_ACTIVE_STATES, RUARK_IDLE_VOLUME,
-                                      STREAMING_RESTART_DELAY)
+from yandex_station.constants import (
+    ALICE_ACTIVE_STATES,
+    RUARK_IDLE_VOLUME,
+    STREAMING_RESTART_DELAY,
+)
 from yandex_station.models import Track
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
@@ -17,7 +20,8 @@ logger = getLogger(__name__)
 
 
 class MainStreamManager:
-    """Класс для управления стримингом"""
+    """Класс для управления стримингом."""
+
     _ws_client: YandexStationClient
     _station_controls: YandexStationControls
     _ruark_controls: RuarkR5Controller
@@ -46,7 +50,7 @@ class MainStreamManager:
         self._tasks = []  # Хранение фоновых задач
 
     async def start(self):
-        """Запуск всех стриминговых процессов"""
+        """Запуск всех стриминговых процессов."""
         if self._stream_state_running or self._tasks:
             logger.info("⚠️ Стриминг уже запущен")
             return
@@ -63,7 +67,7 @@ class MainStreamManager:
         self._tasks.extend([stream_task])
 
     async def stop(self):
-        """Остановка всех стриминговых процессов"""
+        """Остановка всех стриминговых процессов."""
         logger.info("🛑 Остановка стриминга...")
         self._stream_state_running = False
         await self._ruark_controls.stop()
@@ -83,7 +87,7 @@ class MainStreamManager:
         logger.info("✅ Стриминг остановлен")
 
     async def streaming(self):
-        """Основной поток управления стримингом"""
+        """Основной поток управления стримингом."""
         try:
             logger.info("📡 Поток streaming() стартовал")
             await self._prepare_devices()
@@ -96,15 +100,22 @@ class MainStreamManager:
                 title="",
                 duration=0,
                 progress=0,
-                playing=False
+                playing=False,
             )
             stuck_track_count = 0
             last_track_progress = 0
             volume_set_count = 0
             speak_count = 0
+            track_url: str | None = None
 
             while self._stream_state_running:
                 track = await self._station_controls.get_current_track()
+                if track is None:
+                    logger.warning(
+                        "⚠️ Нет данных о треке, пропускаем итерацию"
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
                 current_alice_state = (
                     await self._station_controls.get_alice_state()
                 )
@@ -141,13 +152,11 @@ class MainStreamManager:
                                 if not await self._recover_stuck_track(
                                     track, last_track_progress
                                 ):
-                                    stuck_track_count = 0
-                                else:
                                     logger.warning(
                                         "⚠️ Не удалось перезапустить трек "
                                         "через stop/play"
                                     )
-                                    stuck_track_count = 0
+                                stuck_track_count = 0
 
                     if (
                         last_track_progress != track.progress
@@ -156,9 +165,8 @@ class MainStreamManager:
                     ):
                         logger.info("🔁 Возобновляем воспроизведение радио")
                         await self._send_track_to_stream_server(
-                            track_url=await self._station_controls
-                            .get_radio_url(),
-                            radio=True
+                            track_url=await self._station_controls.get_radio_url(),
+                            radio=True,
                         )
                         await asyncio.sleep(1)
 
@@ -177,12 +185,12 @@ class MainStreamManager:
                             track_url = (
                                 await self._yandex_music_api.get_file_info(
                                     track_id=track.id,
-                                    quality=settings.stream_quality
+                                    quality=settings.stream_quality,
                                 )
                             )
                         await self._send_track_to_stream_server(
                             track_url,
-                            radio=True if track.type == "FmRadio" else False
+                            radio=True if track.type == "FmRadio" else False,
                         )
                         last_track = track
 
@@ -195,8 +203,7 @@ class MainStreamManager:
                         for _ in range(30):
                             if await self._ruark_controls.is_playing():
                                 logger.info("▶️ Ruark начал играть")
-                                await self._station_controls.\
-                                    fade_out_alice_volume()
+                                await self._station_controls.fade_out_alice_volume()
                                 speak_count = 0
                                 break
                             await asyncio.sleep(0.1)
@@ -205,9 +212,17 @@ class MainStreamManager:
                                 "⚠️ Ruark так и не начал играть, "
                                 "перезапуск трека на стрим сервере"
                             )
-                            await self._send_track_to_stream_server(track_url)
-                            await self._station_controls.\
-                                fade_out_alice_volume()
+                            if track_url:
+                                await self._send_track_to_stream_server(
+                                    track_url,
+                                    radio=track.type == "FmRadio",
+                                )
+                            else:
+                                logger.warning(
+                                    "⚠️ Нет сохранённого URL трека "
+                                    "для перезапуска"
+                                )
+                            await self._station_controls.fade_out_alice_volume()
                             speak_count = 0
 
                     if speak_count > 0 and not track.playing:
@@ -218,9 +233,11 @@ class MainStreamManager:
                     current_volume = await self._station_controls.get_volume()
 
                     if (
-                        (current_volume > 0
-                         and track.duration - track.progress > 10
-                         and track.type != "FmRadio")
+                        (
+                            current_volume > 0
+                            and track.duration - track.progress > 10
+                            and track.type != "FmRadio"
+                        )
                         or (track.type == "FmRadio" and track.playing)
                     ) and track.playing:
                         await self._station_controls.fade_out_alice_volume()
@@ -236,9 +253,7 @@ class MainStreamManager:
                     await self._station_controls.unmute()
 
                 self._log_current_track(
-                    track,
-                    current_alice_state,
-                    last_alice_state
+                    track, current_alice_state, last_alice_state
                 )
                 last_track_progress = track.progress
                 last_alice_state = current_alice_state
@@ -252,9 +267,7 @@ class MainStreamManager:
             raise
 
     async def _wrap_streaming(self):
-        """Обёртка, которая следит за потоком стриминга и
-        перезапускает его при падении.
-        """
+        """Следит за потоком стриминга и перезапускает его при падении."""
         while self._stream_state_running:
             try:
                 logger.info("🚀 Запуск потока стриминга")
@@ -264,8 +277,10 @@ class MainStreamManager:
                 break
             except Exception as e:
                 logger.error(f"❌ Поток стриминга упал с ошибкой: {e}")
-                logger.info(f"🔁 Перезапуск стриминга через "
-                            f"{STREAMING_RESTART_DELAY} секунд...")
+                logger.info(
+                    f"🔁 Перезапуск стриминга через "
+                    f"{STREAMING_RESTART_DELAY} секунд..."
+                )
                 await asyncio.sleep(STREAMING_RESTART_DELAY)
                 logger.debug("🔄 Перезапуск потока после падения")
 
@@ -279,11 +294,9 @@ class MainStreamManager:
         self._ruark_volume = await self._ruark_controls.get_volume()
 
     async def _send_track_to_stream_server(
-            self,
-            track_url: str,
-            radio: bool = False
+        self, track_url: str, radio: bool = False
     ):
-        """Отправляет ссылку на трек на стрим сервер"""
+        """Отправляет ссылку на трек на стрим сервер."""
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -293,8 +306,8 @@ class MainStreamManager:
                     f"{settings.local_server_port_dlna}/set_stream",
                     params={
                         "yandex_url": track_url,
-                        "radio": str(radio).lower()
-                    }
+                        "radio": str(radio).lower(),
+                    },
                 ) as resp:
                     response = await resp.json()
                     logger.debug(f"Ответ от Ruark API: {response}")
@@ -307,7 +320,7 @@ class MainStreamManager:
             return None
 
     async def _stop_stream_on_stream_server(self):
-        """Останавливает стрим на стрим сервере"""
+        """Останавливает стрим на стрим сервере."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://{self._stream_server_url}:"
@@ -320,9 +333,7 @@ class MainStreamManager:
                 return response
 
     async def _recover_stuck_track(
-            self,
-            track: Track,
-            last_progress: int
+        self, track: Track, last_progress: int
     ) -> bool:
         logger.warning(
             "⚠️ Track.playing=False при IDLE, но прогресс меняется — "

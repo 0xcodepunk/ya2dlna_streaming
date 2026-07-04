@@ -73,9 +73,14 @@ docker-compose up -d
 
 ### 🔹 Установка зависимостей
 ```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+Для разработки (линтеры, тесты):
+```bash
+pip install -r requirements-dev.txt
 ```
 
 ### 🔹 Запуск сервисов

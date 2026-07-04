@@ -4,18 +4,18 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    """Конфигурация приложения"""
+def resolve_env_path() -> Path:
+    """Определяет путь к файлу .env."""
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        return cwd_env
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / ".env"
+    return Path(__file__).resolve().parent / ".env"
 
-    def resolve_env_path():
-        """Определяет путь к файлу .env"""
-        cwd_env = Path.cwd() / ".env"
-        if cwd_env.exists():
-            return cwd_env
-        elif getattr(sys, "frozen", False):
-            return Path(sys.executable).parent / ".env"
-        else:
-            return Path(__file__).resolve().parent / ".env"
+
+class Settings(BaseSettings):
+    """Конфигурация приложения."""
 
     model_config = SettingsConfigDict(
         env_file=resolve_env_path(),

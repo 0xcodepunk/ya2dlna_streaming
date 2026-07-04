@@ -10,7 +10,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 
 def setup_logging():
-    """Настройка логирования"""
+    """Настройка логирования."""
     logging_config = {
         "version": 1,
         "disable_existing_loggers": True,
@@ -20,18 +20,19 @@ def setup_logging():
                     "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
                 )
             },
+            # Трейсбеки Formatter добавляет сам при наличии exc_info,
+            # явный %(exc_info)s печатал None в каждой строке
             "detailed": {
                 "format": (
-                    "%(asctime)s - %(name)s - %(levelname)s - "
-                    "%(message)s\n%(exc_info)s"
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
                 )
-            }
+            },
         },
         "handlers": {
             "console": {
                 "class": "logging.StreamHandler",
                 "formatter": "detailed",
-                "level": "DEBUG" if settings.debug else "INFO"
+                "level": "DEBUG" if settings.debug else "INFO",
             },
             "file": {
                 "class": "logging.handlers.RotatingFileHandler",
@@ -39,20 +40,20 @@ def setup_logging():
                 "formatter": "detailed",
                 "level": "INFO",
                 "maxBytes": 5 * 1024 * 1024,
-                "backupCount": 3
-            }
+                "backupCount": 3,
+            },
         },
         "root": {
             "handlers": ["console", "file"],
-            "level": "DEBUG" if settings.debug else "INFO"
+            "level": "DEBUG" if settings.debug else "INFO",
         },
         "loggers": {
             "ruark_audio_system": {
                 "handlers": ["console", "file"],
                 "level": "INFO",
-                "propagate": False
+                "propagate": False,
             }
-        }
+        },
     }
     dictConfig(logging_config)
 
