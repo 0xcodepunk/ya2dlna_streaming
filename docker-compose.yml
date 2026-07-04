@@ -1,14 +1,12 @@
-version: '3.8'
-
 services:
   api_service:
     build: .
     command: api
-    ports:
-      - "8001:8001"  
     volumes:
-      - ./logs:/app/logs
-      - ./cache:/app/cache
+      # YA2DLNA_DATA_DIR — постоянная папка для данных вне рабочей
+      # директории деплоя; без переменной — рядом с compose-файлом
+      - ${YA2DLNA_DATA_DIR:-.}/logs:/app/logs
+      - ${YA2DLNA_DATA_DIR:-.}/cache:/app/cache
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     env_file:
@@ -21,11 +19,9 @@ services:
   dlna_server:
     build: .
     command: dlna
-    ports:
-      - "8080:8080"
     volumes:
-      - ./logs:/app/logs
-      - ./cache:/app/cache
+      - ${YA2DLNA_DATA_DIR:-.}/logs:/app/logs
+      - ${YA2DLNA_DATA_DIR:-.}/cache:/app/cache
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     env_file:
