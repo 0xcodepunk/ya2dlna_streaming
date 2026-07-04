@@ -14,7 +14,6 @@ from .constants import (
     FFMPEG_LOCAL_MP3_PARAMS,
     FFMPEG_MP3_PARAMS,
 )
-from .utils import get_latest_index_url
 
 logger = getLogger(__name__)
 
@@ -367,9 +366,10 @@ class StreamHandler:
             )
 
         if radio:
-            # Сохраняем исходный мастер-плейлист
+            # Мастер-плейлист передаётся FFmpeg как есть: вложенные
+            # плейлисты привязаны к сессии (hlssid) и должны запрашиваться
+            # тем же клиентом, что получил мастер
             self._radio_url = yandex_url
-            yandex_url = await get_latest_index_url(self._radio_url)
             self._current_ffmpeg_params = self._get_ffmpeg_params(codec="aac")
         else:
             yandex_url = (

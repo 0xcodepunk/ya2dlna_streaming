@@ -20,10 +20,11 @@ def setup_logging():
                     "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
                 )
             },
+            # Трейсбеки Formatter добавляет сам при наличии exc_info,
+            # явный %(exc_info)s печатал None в каждой строке
             "detailed": {
                 "format": (
-                    "%(asctime)s - %(name)s - %(levelname)s - "
-                    "%(message)s\n%(exc_info)s"
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
                 )
             },
         },
