@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/github/stars/0xcodepunk/ya2dlna_streaming?style=social" alt="GitHub Repo stars"/>
   <img src="https://img.shields.io/github/last-commit/0xcodepunk/ya2dlna_streaming?color=blue" alt="Last commit">
   <img src="https://img.shields.io/github/languages/top/0xcodepunk/ya2dlna_streaming" alt="Top language">
+  <img src="https://github.com/0xcodepunk/ya2dlna_streaming/actions/workflows/ci-cd.yml/badge.svg" alt="CI/CD">
 </p>
 
 Проект для стриминга контента с **Яндекс Станции** на **DLNA-совместимые устройства** и управления аудиосистемой **Ruark R5**.  
