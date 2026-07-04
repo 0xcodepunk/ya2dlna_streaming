@@ -1,0 +1,57 @@
+[tool.black]
+line-length = 79
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | cache
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 79
+known_first_party = [
+    "api",
+    "core",
+    "dlna_stream_server",
+    "main_stream_service",
+    "ruark_audio_system",
+    "yandex_station",
+]
+src_paths = ["src", "tests"]
+skip = [".venv", "venv", "build", "dist", "cache"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+files = ["src"]
+explicit_package_bases = true
+namespace_packages = true
+warn_unused_configs = true
+pretty = true
+
+exclude = '(^|/)(tmp_.*|temp.*)\.py$'
+
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = true
+
+# TODO(этап 4): включить check_untyped_defs, disallow_any_generics
+# и strict-режим по слоям после выправления аннотаций.
+
+[[tool.mypy.overrides]]
+module = ["upnpclient", "upnpclient.*", "yandex_music", "yandex_music.*"]
+ignore_missing_imports = true

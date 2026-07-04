@@ -1,0 +1,11 @@
+-r requirements.txt
+
+black
+flake8
+flake8-bugbear
+flake8-docstrings
+flake8-isort
+isort
+mypy
+pytest==8.3.5
+pytest-asyncio==0.26.0
