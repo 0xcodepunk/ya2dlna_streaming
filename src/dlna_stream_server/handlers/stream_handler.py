@@ -44,6 +44,12 @@ class StreamHandler:
         self._ruark_controls = ruark_controls
         self._ruark_lock = asyncio.Lock()
         self._ffmpeg = FfmpegSupervisor(on_restarted=self._reattach_ruark)
+        # Количество клиентов, читающих /live_stream.mp3 прямо сейчас
+        self._active_clients = 0
+        # Формат потока подключённого клиента (флаг radio)
+        self._client_radio: bool | None = None
+        # Сколько ждать новый процесс FFmpeg при бесшовной смене трека
+        self._switch_grace = 5.0
 
     async def execute_with_lock(
         self,
@@ -78,12 +84,47 @@ class StreamHandler:
         )
 
     async def _reattach_ruark(self, radio: bool) -> None:
-        """Заново привязывает Ruark к локальному стриму и запускает play."""
+        """Привязывает Ruark к локальному стриму, если он ещё не на нём.
+
+        При подключённом клиенте того же формата привязка не нужна:
+        байты продолжают течь по открытому HTTP-ответу без разрыва.
+        """
+        if self._active_clients > 0 and self._client_radio == radio:
+            logger.info(
+                "🔗 Клиент уже на потоке — привязка Ruark не требуется"
+            )
+            return
+
         track_url = self._local_stream_url(radio)
         await self.execute_with_lock(
             self._ruark_controls.set_av_transport_uri, track_url
         )
         await self.execute_with_lock(self._ruark_controls.play)
+
+    async def _wait_for_replacement(
+        self, old_proc: asyncio.subprocess.Process, radio: bool
+    ) -> asyncio.subprocess.Process | None:
+        """Ждёт новый процесс FFmpeg для бесшовной смены трека.
+
+        Returns:
+            Новый живой процесс или None, если поток остановлен,
+            сменился формат (radio) или замена не появилась вовремя.
+        """
+        deadline = time.monotonic() + self._switch_grace
+        while time.monotonic() < deadline:
+            candidate = self._ffmpeg.process
+            if (
+                candidate is not None
+                and candidate is not old_proc
+                and candidate.stdout is not None
+                and candidate.returncode is None
+            ):
+                if self._ffmpeg.current_radio != radio:
+                    # Формат сменился — нужен новый HTTP-ответ
+                    return None
+                return candidate
+            await asyncio.sleep(0.1)
+        return None
 
     async def stop_ffmpeg(self) -> None:
         """Останавливает текущий процесс FFmpeg, если он запущен."""
@@ -130,29 +171,45 @@ class StreamHandler:
     async def stream_audio(self, radio: bool = False) -> StreamingResponse:
         """Отдаёт потоковый аудио-ответ клиенту.
 
-        Реализована защита от залипания: если FFmpeg завершился
-        или не даёт данных — поток закрывается.
+        Поток бесшовный: при смене трека генератор дожидается нового
+        процесса FFmpeg и продолжает отдачу без разрыва HTTP-ответа.
+        Защита от залипания сохранена: если FFmpeg не даёт данных —
+        поток закрывается.
         """
         proc = self._ffmpeg.process
         if not proc or proc.stdout is None:
             raise HTTPException(status_code=404, detail="Поток не запущен")
-        stdout = proc.stdout
 
         async def generate():
+            current = proc
+            stdout = current.stdout
+            empty_count = 0
+            # Счётчик таймаутов для снижения шума в логах
+            timeout_count = 0
+            total_bytes_sent = 0
+            serve_started = time.monotonic()
+            first_chunk_sent = False
+            self._active_clients += 1
+            self._client_radio = radio
             try:
-                empty_count = 0
-                # Счётчик таймаутов для снижения шума в логах
-                timeout_count = 0
-                total_bytes_sent = 0
-                serve_started = time.monotonic()
-                first_chunk_sent = False
                 while True:
-                    # Выход после полной передачи stdout
-                    if stdout.at_eof():
-                        logger.info(
-                            "📭 FFmpeg stdout закрылся (EOF) — поток завершён"
+                    # Процесс кончился: пробуем бесшовно перейти на новый
+                    if stdout is None or stdout.at_eof():
+                        replacement = await self._wait_for_replacement(
+                            current, radio
                         )
-                        break
+                        if replacement is None:
+                            logger.info(
+                                "📭 Поток завершён — замены процесса нет"
+                            )
+                            break
+                        logger.info(
+                            "🔗 Бесшовное переключение на новый "
+                            "процесс FFmpeg"
+                        )
+                        current = replacement
+                        stdout = current.stdout
+                        continue
 
                     try:
                         chunk = await asyncio.wait_for(
@@ -170,6 +227,9 @@ class StreamHandler:
                         chunk = b""
 
                     if not chunk:
+                        if stdout.at_eof():
+                            # EOF обработает ветка переключения выше
+                            continue
                         empty_count += 1
                         logger.debug(
                             f"📭 Пустой chunk ({empty_count}), ждем данные"
@@ -205,17 +265,17 @@ class StreamHandler:
                     yield chunk
 
                 # После выхода из цикла логируем завершение FFmpeg
-                if proc.returncode is not None:
-                    if proc.returncode == 0:
+                if current.returncode is not None:
+                    if current.returncode == 0:
                         logger.info(
                             f"✅ FFmpeg процесс завершился нормально "
-                            f"(код: {proc.returncode}) - "
+                            f"(код: {current.returncode}) - "
                             "трек закончился естественным путем"
                         )
                     else:
                         logger.warning(
                             f"⚠️ FFmpeg процесс завершился с ошибкой "
-                            f"(код: {proc.returncode})"
+                            f"(код: {current.returncode})"
                         )
 
             except asyncio.CancelledError:
@@ -224,13 +284,13 @@ class StreamHandler:
                     f"📊 Всего передано данных: {total_bytes_sent} байт"
                 )
                 # Диагностика: проверяем состояние FFmpeg при отключении
-                if proc.returncode is None:
+                if current.returncode is None:
                     logger.debug(
                         "⚠️ FFmpeg всё ещё работает после отключения клиента"
                     )
                 else:
                     logger.info(
-                        f"ℹ️ FFmpeg завершился с кодом: {proc.returncode}"
+                        f"ℹ️ FFmpeg завершился с кодом: {current.returncode}"
                     )
                 raise
             except Exception as e:
@@ -239,6 +299,10 @@ class StreamHandler:
                     f"📊 Всего передано данных: {total_bytes_sent} байт"
                 )
                 await self.stop_ffmpeg()
+            finally:
+                self._active_clients -= 1
+                if self._active_clients == 0:
+                    self._client_radio = None
 
         media_type = "audio/mpeg" if not radio else "audio/aac"
 

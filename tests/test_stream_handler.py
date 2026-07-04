@@ -152,3 +152,78 @@ def test_insert_start_position_zero_keeps_params_unchanged():
     assert _insert_start_position(FFMPEG_MP3_PARAMS, 0.0) == list(
         FFMPEG_MP3_PARAMS
     )
+
+
+async def read_chunk(agen, timeout=3.0):
+    """Читает следующий чанк из генератора стрима с таймаутом."""
+    return await asyncio.wait_for(agen.__anext__(), timeout)
+
+
+async def test_stream_survives_process_swap():
+    handler, _ = make_handler()
+    set_params(handler, ["sh", "-c", "printf AAAA; exec sleep 30"])
+    await handler.start_ffmpeg_stream("http://example/one")
+
+    response = await handler.stream_audio()
+    agen = response.body_iterator
+    assert b"AAAA" in await read_chunk(agen)
+
+    # Смена трека: старый процесс гаснет, генератор бесшовно
+    # переходит на новый без разрыва HTTP-ответа
+    set_params(handler, ["sh", "-c", "printf BBBB; exec sleep 30"])
+    await handler.start_ffmpeg_stream("http://example/two")
+
+    assert b"BBBB" in await read_chunk(agen, timeout=6.0)
+    await agen.aclose()
+    await handler.stop_ffmpeg()
+
+
+async def test_stream_ends_when_replacement_does_not_arrive():
+    handler, _ = make_handler()
+    handler._switch_grace = 0.2
+    set_params(handler, ["sh", "-c", "printf AAAA"])
+    await handler.start_ffmpeg_stream("http://example/one")
+
+    response = await handler.stream_audio()
+    agen = response.body_iterator
+    assert b"AAAA" in await read_chunk(agen)
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(agen.__anext__(), 3.0)
+    await handler.stop_ffmpeg()
+
+
+async def test_reattach_skipped_when_client_listening():
+    handler, ruark = make_handler()
+    set_params(handler, ["sh", "-c", "printf AAAA; exec sleep 30"])
+
+    await handler.play_stream("http://example/one")
+    assert ruark.set_av_transport_uri.call_count == 1
+
+    response = await handler.stream_audio()
+    agen = response.body_iterator
+    await read_chunk(agen)
+
+    # Клиент подключён и формат тот же — привязка не повторяется
+    await handler.play_stream("http://example/two")
+    assert ruark.set_av_transport_uri.call_count == 1
+
+    await agen.aclose()
+    await handler.stop_ffmpeg()
+
+
+async def test_reattach_happens_when_format_changes():
+    handler, ruark = make_handler()
+    set_params(handler, ["sh", "-c", "printf AAAA; exec sleep 30"])
+
+    await handler.play_stream("http://example/one")
+    response = await handler.stream_audio()
+    agen = response.body_iterator
+    await read_chunk(agen)
+
+    # Переход трек → радио меняет формат, привязка обязательна
+    await handler.play_stream("http://example/radio.m3u8", radio=True)
+    assert ruark.set_av_transport_uri.call_count == 2
+
+    await agen.aclose()
+    await handler.stop_ffmpeg()

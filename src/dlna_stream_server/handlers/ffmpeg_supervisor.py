@@ -39,6 +39,11 @@ class FfmpegSupervisor:
         """Текущий процесс FFmpeg или None."""
         return self._process
 
+    @property
+    def current_radio(self) -> bool:
+        """Режим радио текущего потока."""
+        return self._current_radio
+
     def reset_restart_state(self) -> None:
         """Сбрасывает счётчик попыток перед новым пользовательским стартом."""
         self._restart_attempts = 0
