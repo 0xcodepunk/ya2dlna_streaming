@@ -9,8 +9,11 @@ from fastapi.responses import StreamingResponse
 from core.config.settings import settings
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
-from .constants import (FFMPEG_AAC_PARAMS, FFMPEG_LOCAL_MP3_PARAMS,
-                        FFMPEG_MP3_PARAMS)
+from .constants import (
+    FFMPEG_AAC_PARAMS,
+    FFMPEG_LOCAL_MP3_PARAMS,
+    FFMPEG_MP3_PARAMS,
+)
 from .utils import get_latest_index_url
 
 logger = getLogger(__name__)
@@ -18,6 +21,7 @@ logger = getLogger(__name__)
 
 class StreamHandler:
     """Класс для управления потоковой передачей и воспроизведением на Ruark."""
+
     def __init__(self, ruark_controls: RuarkR5Controller):
         self._radio_url: str | None = None
         self._ruark_lock = asyncio.Lock()
@@ -57,9 +61,7 @@ class StreamHandler:
             return
 
         proc = self._ffmpeg_process
-        logger.info(
-            f"🔍 Начинаем мониторинг FFmpeg процесса PID: {proc.pid}"
-        )
+        logger.info(f"🔍 Начинаем мониторинг FFmpeg процесса PID: {proc.pid}")
 
         try:
             # Читаем stderr в отдельной задаче
@@ -81,7 +83,9 @@ class StreamHandler:
                     self._restart_task = asyncio.create_task(
                         self._safe_restart_stream()
                     )
-                    logger.info("🔄 Перезапускаем поток радио в фоновом режиме")
+                    logger.info(
+                        "🔄 Перезапускаем поток радио в фоновом режиме"
+                    )
                 logger.info(
                     f"✅ FFmpeg процесс завершился нормально "
                     f"(код: {returncode}) - трек закончился естественным путем"
@@ -93,8 +97,11 @@ class StreamHandler:
                 )
 
             # Проверяем нужность восстановления - только при ошибках!
-            if (self._ffmpeg_process == proc and self._current_url
-                    and returncode != 0):
+            if (
+                self._ffmpeg_process == proc
+                and self._current_url
+                and returncode != 0
+            ):
                 logger.warning(
                     "⚠️ Запускаем автоматическое восстановление потока в фоне"
                 )
@@ -118,7 +125,7 @@ class StreamHandler:
                 line = await proc.stderr.readline()
                 if not line:
                     break
-                line_str = line.decode('utf-8', errors='ignore').strip()
+                line_str = line.decode("utf-8", errors="ignore").strip()
                 if not line_str:
                     continue
 
@@ -126,18 +133,30 @@ class StreamHandler:
 
                 # Диагностика: обязательно логируем все ошибки и завершения
                 error_keywords = [
-                    'fatal', 'cannot open', 'invalid argument',
-                    'invalid data found', 'no such file', 'permission denied'
+                    "fatal",
+                    "cannot open",
+                    "invalid argument",
+                    "invalid data found",
+                    "no such file",
+                    "permission denied",
                 ]
                 warning_keywords = [
-                    'error', 'failed', 'connection', 'broken', 'timeout',
-                    'invalid data found', 'deprecated'
+                    "error",
+                    "failed",
+                    "connection",
+                    "broken",
+                    "timeout",
+                    "invalid data found",
+                    "deprecated",
                 ]
 
                 # Специальные ключевые слова для диагностики
                 critical_keywords = [
-                    'segmentation fault', 'core dumped', 'killed',
-                    'terminated', 'aborted'
+                    "segmentation fault",
+                    "core dumped",
+                    "killed",
+                    "terminated",
+                    "aborted",
                 ]
 
                 if any(keyword in lower_line for keyword in critical_keywords):
@@ -148,7 +167,7 @@ class StreamHandler:
                     keyword in lower_line for keyword in warning_keywords
                 ):
                     logger.debug(f"⚠️ FFmpeg warning: {line_str}")
-                elif 'duration:' in lower_line or 'bitrate:' in lower_line:
+                elif "duration:" in lower_line or "bitrate:" in lower_line:
                     # Информация о файле - важно для диагностики
                     logger.debug(f"📋 FFmpeg info: {line_str}")
                 else:
@@ -176,7 +195,7 @@ class StreamHandler:
         self._is_restarting = True
         self._restart_attempts += 1
         delay = (
-            min(2 ** self._restart_attempts, 30)
+            min(2**self._restart_attempts, 30)
             if not self._current_radio
             else 0
         )  # Прогрессивная задержка
@@ -207,12 +226,9 @@ class StreamHandler:
                 f"?radio={str(self._current_radio).lower()}"
             )
             await self.execute_with_lock(
-                self._ruark_controls.set_av_transport_uri,
-                track_url
+                self._ruark_controls.set_av_transport_uri, track_url
             )
-            await self.execute_with_lock(
-                self._ruark_controls.play
-            )
+            await self.execute_with_lock(self._ruark_controls.play)
             self._restart_attempts = 0
             logger.info("✅ Поток успешно перезапущен быстрой логикой!")
 
@@ -369,17 +385,17 @@ class StreamHandler:
 
         # Улучшенные параметры для стабильной работы с временными ссылками
         ffmpeg_params = [
-            param.format(yandex_url=yandex_url)
-            if isinstance(param, str) and (
-                '{yandex_url}' in param
+            (
+                param.format(yandex_url=yandex_url)
+                if isinstance(param, str) and ("{yandex_url}" in param)
+                else param
             )
-            else param
             for param in self._current_ffmpeg_params
         ]
         self._ffmpeg_process = await asyncio.create_subprocess_exec(
             *ffmpeg_params,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
 
         logger.info(
@@ -417,7 +433,7 @@ class StreamHandler:
                     try:
                         chunk = await asyncio.wait_for(
                             proc.stdout.read(4096),
-                            timeout=15  # Увеличили с 5 до 15 секунд
+                            timeout=15,  # Увеличили с 5 до 15 секунд
                         )
                     except asyncio.TimeoutError:
                         timeout_count += 1
@@ -432,8 +448,7 @@ class StreamHandler:
                     if not chunk:
                         empty_count += 1
                         logger.debug(
-                            f"📭 Пустой chunk ({empty_count}), "
-                            f"ждем данные"
+                            f"📭 Пустой chunk ({empty_count}), " f"ждем данные"
                         )
                         await asyncio.sleep(1.5)
                         if empty_count >= 10:
@@ -529,14 +544,11 @@ class StreamHandler:
 
             # Устанавливаем новый поток
             await self.execute_with_lock(
-                self._ruark_controls.set_av_transport_uri,
-                track_url
+                self._ruark_controls.set_av_transport_uri, track_url
             )
 
             # Запускаем воспроизведение
-            await self.execute_with_lock(
-                self._ruark_controls.play
-            )
+            await self.execute_with_lock(self._ruark_controls.play)
 
             logger.info("✅ Переключение трека завершено быстро!")
 
@@ -554,14 +566,13 @@ class StreamHandler:
                         f"Не удалось получить MP3 файл: {response.status}"
                     )
                     raise HTTPException(
-                        status_code=404,
-                        detail="Не удалось получить MP3 файл"
+                        status_code=404, detail="Не удалось получить MP3 файл"
                     )
                 # Сохраняем в папку handlers/mp3_files
                 mp3_dir = os.path.join(os.path.dirname(__file__), "mp3_files")
                 os.makedirs(mp3_dir, exist_ok=True)
 
-                filename = yandex_url.split('/')[-1]
+                filename = yandex_url.split("/")[-1]
                 mp3_local_path = os.path.join(mp3_dir, filename)
 
                 if not mp3_local_path.endswith(".mp3"):
@@ -582,9 +593,7 @@ class StreamHandler:
                     if os.path.isfile(file_path):
                         os.remove(file_path)
                         logger.info(f"🗑️ Удалён старый MP3 файл: {file_path}")
-                logger.info(
-                    f"🧹 Папка {mp3_dir} очищена от старых MP3 файлов"
-                )
+                logger.info(f"🧹 Папка {mp3_dir} очищена от старых MP3 файлов")
             else:
                 logger.info(
                     f"📁 Папка {mp3_dir} не существует, пропускаем очистку"

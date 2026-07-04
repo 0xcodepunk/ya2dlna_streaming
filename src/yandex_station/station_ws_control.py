@@ -307,8 +307,7 @@ class YandexStationClient:
             try:
                 # Ждём сообщение от станции, не дольше 30 секунд
                 msg = await asyncio.wait_for(
-                    self.websocket.receive(),
-                    timeout=30
+                    self.websocket.receive(), timeout=30
                 )
 
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -337,8 +336,7 @@ class YandexStationClient:
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     logger.warning(
-                        f"❌ WebSocket закрыт станцией (CLOSED): "
-                        f"{msg}"
+                        f"❌ WebSocket закрыт станцией (CLOSED): " f"{msg}"
                     )
                     if self._connected_at is not None:
                         total_seconds = time.monotonic() - self._connected_at
@@ -388,8 +386,7 @@ class YandexStationClient:
         while self.running:
             try:
                 command = await asyncio.wait_for(
-                    self.command_queue.get(),
-                    timeout=30
+                    self.command_queue.get(), timeout=30
                 )
             except asyncio.TimeoutError:
                 logger.debug("⏱ Очередь пуста, ждём новые команды...")
@@ -407,8 +404,7 @@ class YandexStationClient:
 
                 try:
                     await asyncio.wait_for(
-                        self.websocket.send_json(command),
-                        timeout=5
+                        self.websocket.send_json(command), timeout=5
                     )
                     logger.info(f"✅ Команда отправлена на станцию: {command}")
                 except asyncio.TimeoutError:
@@ -532,20 +528,24 @@ class YandexStationClient:
             except asyncio.CancelledError:
                 logger.info("✅ Задача подключения к станции отменена")
             except Exception as e:
-                logger.error(f"❌ Ошибка при остановке задачи подключения: {e}")
+                logger.error(
+                    f"❌ Ошибка при остановке задачи подключения: {e}"
+                )
             self._connect_task = None
             logger.info("✅ Задача подключения к станции отменена")
 
     def _log_software_version(self, software_version: str):
         """Логирует версию ПО станции в файл, если она изменилась."""
         try:
-            version_log_file_path = os.path.abspath(os.path.join(
-                os.path.dirname(__file__),
-                '..',
-                '..',
-                'logs',
-                'firmware_version.log'
-            ))
+            version_log_file_path = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "..",
+                    "logs",
+                    "firmware_version.log",
+                )
+            )
             os.makedirs(os.path.dirname(version_log_file_path), exist_ok=True)
             current_version = ""
             if os.path.exists(version_log_file_path):
@@ -555,7 +555,7 @@ class YandexStationClient:
                         # Берем последнюю строку и извлекаем версию
                         last_line = lines[-1].strip()
                         if last_line:
-                            current_version = last_line.split(' - ')[0]
+                            current_version = last_line.split(" - ")[0]
 
             if current_version != software_version:
                 with open(version_log_file_path, "a") as file:

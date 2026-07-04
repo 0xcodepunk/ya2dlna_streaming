@@ -1,12 +1,14 @@
 from injector import Injector, Module
 
-from core.dependencies.di_modules import (DeviceFinderModule,
-                                          MainStreamManagerModule,
-                                          RuarkR5ControllerModule,
-                                          StreamHandlerModule,
-                                          YandexMusicAPIModule,
-                                          YandexStationClientModule,
-                                          YandexStationControlsModule)
+from core.dependencies.di_modules import (
+    DeviceFinderModule,
+    MainStreamManagerModule,
+    RuarkR5ControllerModule,
+    StreamHandlerModule,
+    YandexMusicAPIModule,
+    YandexStationClientModule,
+    YandexStationControlsModule,
+)
 
 
 class MainDIContainer:
@@ -22,7 +24,7 @@ class MainDIContainer:
         YandexMusicAPIModule,
         MainStreamManagerModule,
         StreamHandlerModule,
-        DeviceFinderModule
+        DeviceFinderModule,
     ]
 
     def __new__(cls, additional_modules: list[Module] = None):
@@ -35,7 +37,9 @@ class MainDIContainer:
             if additional_modules:
                 modules.extend(additional_modules)
 
-            cls._instance._container = Injector(modules)  # ✅ Создаём контейнер
+            cls._instance._container = Injector(
+                modules
+            )  # ✅ Создаём контейнер
 
         return cls._instance
 

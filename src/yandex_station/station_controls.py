@@ -155,7 +155,9 @@ class YandexStationControls:
             self._volume = await self.get_volume()
             logger.info(f"Громкость по умолчанию: {self._volume}")
         except Exception as e:
-            logger.error(f"❌ Ошибка при установке громкости по умолчанию: {e}")
+            logger.error(
+                f"❌ Ошибка при установке громкости по умолчанию: {e}"
+            )
 
     async def set_volume(self, volume: float):
         """Установка уровня громкости"""
@@ -211,10 +213,7 @@ class YandexStationControls:
         await self.mute()
 
     async def fade_out_alice_volume(
-            self,
-            min_volume: float = 0.0,
-            step: float = 0.1,
-            delay: float = 0.3
+        self, min_volume: float = 0.0, step: float = 0.1, delay: float = 0.3
     ):
         """Плавное уменьшение громкости Алисы в несколько шагов"""
         if self._was_muted:
@@ -227,7 +226,8 @@ class YandexStationControls:
 
         logger.info(
             f"🔉 Плавное снижение громкости Алисы: "
-            f"{volume:.1f} ➝ {min_volume:.1f} шагом {step}")
+            f"{volume:.1f} ➝ {min_volume:.1f} шагом {step}"
+        )
 
         try:
             v = volume

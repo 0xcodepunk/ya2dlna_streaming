@@ -25,10 +25,7 @@ class RuarkR5Controller:
 
     _session_id: str
 
-    def __init__(
-            self,
-            device_name: str = "Ruark R5"
-    ) -> None:
+    def __init__(self, device_name: str = "Ruark R5") -> None:
         """Инициализация и поиск устройства Ruark R5 в сети"""
         self.device_name = device_name
         self.refresh_device()
@@ -59,8 +56,10 @@ class RuarkR5Controller:
         self.rendering_control = self.services.get(
             "urn:schemas-upnp-org:service:RenderingControl:1"
         )
-        logger.info(f"Устройство обновлено: {self.device.friendly_name} "
-                    f"({self.device.location})")
+        logger.info(
+            f"Устройство обновлено: {self.device.friendly_name} "
+            f"({self.device.location})"
+        )
 
     def find_device(self, device_name: str) -> Optional[upnpclient.Device]:
         """Находит устройство по имени"""
@@ -112,9 +111,11 @@ class RuarkR5Controller:
 
     async def get_current_connection_ids(self) -> List[str]:
         """Получение списка активных соединений"""
-        return (await asyncio.to_thread(
-            self.connection_manager.GetCurrentConnectionIDs
-        ))["ConnectionIDs"]
+        return (
+            await asyncio.to_thread(
+                self.connection_manager.GetCurrentConnectionIDs
+            )
+        )["ConnectionIDs"]
 
     async def get_current_connection_info(
         self, connection_id: int
@@ -122,7 +123,7 @@ class RuarkR5Controller:
         """Получение информации о соединении"""
         return await asyncio.to_thread(
             self.connection_manager.GetCurrentConnectionInfo,
-            ConnectionID=connection_id
+            ConnectionID=connection_id,
         )
 
     #   AVTransport
@@ -133,7 +134,7 @@ class RuarkR5Controller:
             self.av_transport.SetAVTransportURI,
             InstanceID=0,
             CurrentURI=uri,
-            CurrentURIMetaData=metadata
+            CurrentURIMetaData=metadata,
         )
         logger.info(f"🎵 Поток установлен: {uri}")
 
@@ -169,10 +170,7 @@ class RuarkR5Controller:
     async def seek(self, target: str, unit: SeekUnitType = "REL_TIME") -> None:
         """Перемотка на указанное время (например, '00:01:30')"""
         await asyncio.to_thread(
-            self.av_transport.Seek,
-            InstanceID=0,
-            Unit=unit,
-            Target=target
+            self.av_transport.Seek, InstanceID=0, Unit=unit, Target=target
         )
         logger.info(f"⏩ Перемотка на {target}")
 
@@ -191,15 +189,13 @@ class RuarkR5Controller:
     async def get_transport_info(self) -> Dict[str, Any]:
         """Получение информации о состоянии транспорта"""
         return await asyncio.to_thread(
-            self.av_transport.GetTransportInfo,
-            InstanceID=0
+            self.av_transport.GetTransportInfo, InstanceID=0
         )
 
     async def get_transport_settings(self) -> Dict[str, Any]:
         """Получение настроек воспроизведения"""
         return await asyncio.to_thread(
-            self.av_transport.GetTransportSettings,
-            InstanceID=0
+            self.av_transport.GetTransportSettings, InstanceID=0
         )
 
     async def is_playing(self, timeout: float = 5.0) -> bool:
@@ -219,9 +215,7 @@ class RuarkR5Controller:
     async def set_play_mode(self, mode: PlayModeType) -> None:
         """Установка режима воспроизведения"""
         await asyncio.to_thread(
-            self.av_transport.SetPlayMode,
-            InstanceID=0,
-            NewPlayMode=mode
+            self.av_transport.SetPlayMode, InstanceID=0, NewPlayMode=mode
         )
         logger.info(f"🔄 Установлен режим воспроизведения: {mode}")
 
@@ -229,9 +223,7 @@ class RuarkR5Controller:
     async def get_volume(self) -> int:
         """Получение текущего уровня громкости"""
         result = await asyncio.to_thread(
-            self.rendering_control.GetVolume,
-            InstanceID=0,
-            Channel="Master"
+            self.rendering_control.GetVolume, InstanceID=0, Channel="Master"
         )
         return result["CurrentVolume"]
 
@@ -241,16 +233,14 @@ class RuarkR5Controller:
             self.rendering_control.SetVolume,
             InstanceID=0,
             Channel="Master",
-            DesiredVolume=volume
+            DesiredVolume=volume,
         )
         logger.info(f"🔊 Громкость установлена на {volume}")
 
     async def get_mute(self) -> bool:
         """Получение состояния mute"""
         result = await asyncio.to_thread(
-            self.rendering_control.GetMute,
-            InstanceID=0,
-            Channel="Master"
+            self.rendering_control.GetMute, InstanceID=0, Channel="Master"
         )
         return bool(result["CurrentMute"])
 
@@ -260,23 +250,24 @@ class RuarkR5Controller:
             self.rendering_control.SetMute,
             InstanceID=0,
             Channel="Master",
-            DesiredMute=int(mute)
+            DesiredMute=int(mute),
         )
         logger.info("🔇 Звук отключен" if mute else "🔊 Звук включен")
 
     async def fade_out_ruark(
-            self,
-            start_volume: int,
-            min_volume: int = 2,
-            step: int = 6,
-            delay: float = 0.1
+        self,
+        start_volume: int,
+        min_volume: int = 2,
+        step: int = 6,
+        delay: float = 0.1,
     ):
         """Плавное уменьшение громкости Ruark в несколько шагов"""
         volume = start_volume - start_volume % 2
 
         logger.info(
             f"🔉 Плавное снижение громкости Ruark: "
-            f"{volume} ➝ {min_volume} шагом {step}")
+            f"{volume} ➝ {min_volume} шагом {step}"
+        )
 
         try:
             for v in range(volume, min_volume - 1, -step):
@@ -292,8 +283,7 @@ class RuarkR5Controller:
     async def list_presets(self) -> str:
         """Получение списка пресетов"""
         result = await asyncio.to_thread(
-            self.rendering_control.ListPresets,
-            InstanceID=0
+            self.rendering_control.ListPresets, InstanceID=0
         )
         return result["CurrentPresetNameList"]
 
@@ -302,7 +292,7 @@ class RuarkR5Controller:
         await asyncio.to_thread(
             self.rendering_control.SelectPreset,
             InstanceID=0,
-            PresetName=preset_name
+            PresetName=preset_name,
         )
         logger.info(f"🎛 Выбран пресет: {preset_name}")
 
@@ -315,8 +305,8 @@ class RuarkR5Controller:
                     f"?pin={settings.ruark_pin}"
                 ) as response:
                     content = await response.text()
-                    self._session_id = (
-                        SESSION_ID_REGEX.search(content).group(1)
+                    self._session_id = SESSION_ID_REGEX.search(content).group(
+                        1
                     )
                     return self._session_id
         except Exception as e:
