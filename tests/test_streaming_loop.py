@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from main_stream_service.main_stream_manager import MainStreamManager
+from main_stream_service.main_stream_manager import (
+    MainStreamManager,
+    _CycleContext,
+)
 from main_stream_service.yandex_music_api import YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import RUARK_IDLE_VOLUME
@@ -273,3 +276,37 @@ async def test_normal_playback_does_not_trigger_resync(fast_sleep):
         call.kwargs.get("start_position") is None
         for call in send.call_args_list
     )
+
+
+async def test_resync_ignores_stale_progress_snapshot():
+    """Долгая итерация не должна выглядеть как скачок прогресса."""
+    manager = make_manager(make_station_controls(make_track()), make_ruark())
+    ctx = _CycleContext(
+        last_track=make_track(progress=0.0),
+        last_alice_state="IDLE",
+        last_track_progress=0.0,
+        last_progress_at=time.monotonic() - 6.0,  # снапшот протух на 6с
+        last_track_playing=True,
+    )
+
+    # Станция уехала на ~6с за 6с реального времени — это не скачок
+    await manager._resync_after_progress_jump(make_track(progress=6.0), ctx)
+
+    manager._send_track_to_stream_server.assert_not_called()
+
+
+async def test_resync_detects_real_jump_with_fresh_snapshot():
+    manager = make_manager(make_station_controls(make_track()), make_ruark())
+    ctx = _CycleContext(
+        last_track=make_track(progress=10.0),
+        last_alice_state="IDLE",
+        last_track_progress=10.0,
+        last_progress_at=time.monotonic() - 0.5,
+        last_track_playing=True,
+    )
+
+    await manager._resync_after_progress_jump(make_track(progress=120.0), ctx)
+
+    send = manager._send_track_to_stream_server
+    send.assert_called_once()
+    assert send.call_args.kwargs["start_position"] == pytest.approx(120.0)

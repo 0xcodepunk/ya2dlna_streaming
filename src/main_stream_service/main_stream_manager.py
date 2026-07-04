@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import dataclass
 from logging import getLogger
 
@@ -30,6 +31,8 @@ class _CycleContext:
     last_track: Track
     last_alice_state: str | None
     last_track_progress: float = 0.0
+    # Момент снятия снапшота прогресса (time.monotonic)
+    last_progress_at: float = 0.0
     last_track_playing: bool = False
     stuck_track_count: int = 0
     volume_set_count: int = 0
@@ -155,6 +158,7 @@ class MainStreamManager:
 
                 self._log_current_track(track, alice_state, ctx)
                 ctx.last_track_progress = track.progress
+                ctx.last_progress_at = time.monotonic()
                 ctx.last_track_playing = track.playing
                 ctx.last_alice_state = alice_state
                 await asyncio.sleep(STREAM_POLL_INTERVAL)
@@ -263,7 +267,9 @@ class MainStreamManager:
 
         Ловит разрывы, при которых id трека не меняется: повтор
         (прогресс к нулю), перемотку (скачок в любую сторону)
-        и продолжение после паузы.
+        и продолжение после паузы. Прогресс сравнивается с ожидаемым
+        значением с учётом времени, прошедшего со снапшота, — иначе
+        долгая итерация (fade, запросы) выглядела бы как скачок.
         """
         if track.type == "FmRadio" or not track.playing:
             return
@@ -271,17 +277,18 @@ class MainStreamManager:
             return
 
         resumed = not ctx.last_track_playing
+        elapsed = time.monotonic() - ctx.last_progress_at
+        expected_progress = ctx.last_track_progress + elapsed
         jumped = (
-            abs(track.progress - ctx.last_track_progress)
-            > PROGRESS_JUMP_THRESHOLD
+            abs(track.progress - expected_progress) > PROGRESS_JUMP_THRESHOLD
         )
         if not (resumed or jumped):
             return
 
         reason = "продолжение после паузы" if resumed else "разрыв прогресса"
         logger.info(
-            f"🔁 Ресинк стрима ({reason}): "
-            f"{ctx.last_track_progress:.0f}s → {track.progress:.0f}s"
+            f"🔁 Ресинк стрима ({reason}): ожидали "
+            f"~{expected_progress:.0f}s, станция на {track.progress:.0f}s"
         )
         track_url = await self._yandex_music_api.get_file_info(
             track_id=track.id,
