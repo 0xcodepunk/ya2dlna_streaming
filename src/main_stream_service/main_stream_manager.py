@@ -299,6 +299,7 @@ class MainStreamManager:
             f"🔁 Ресинк стрима ({reason}): ожидали "
             f"~{expected_progress:.0f}s, станция на {track.progress:.0f}s"
         )
+        resync_started = time.monotonic()
         track_url = await self._yandex_music_api.get_file_info(
             track_id=track.id,
             quality=settings.stream_quality,
@@ -312,6 +313,10 @@ class MainStreamManager:
             track_url,
             radio=False,
             start_position=track.progress,
+        )
+        logger.info(
+            f"⏱ Ресинк выполнен за "
+            f"{time.monotonic() - resync_started:.2f}с"
         )
 
     async def _switch_to_new_track(
