@@ -1,0 +1,84 @@
+# CI/CD: проверки на GitHub-hosted раннерах, деплой — на self-hosted
+# раннере Raspberry Pi. Деплой срабатывает только на push в main,
+# поэтому код из форков на Raspberry никогда не выполняется.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    name: Линтеры, типы и тесты
+    runs-on: ubuntu-latest
+    env:
+      # Фиктивные значения настроек: реальные нужны только в рантайме
+      APP_YA_MUSIC_TOKEN: ci-dummy-token
+      APP_LOCAL_SERVER_HOST: 127.0.0.1
+      APP_LOCAL_SERVER_PORT_DLNA: "8080"
+      APP_LOCAL_SERVER_PORT_API: "8001"
+      APP_RUARK_PIN: "1234"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Установка зависимостей
+        run: pip install -r requirements-dev.txt
+
+      - name: Проверка форматирования (black)
+        run: black --check src tests
+
+      - name: Проверка импортов (isort)
+        run: isort --check-only src tests
+
+      - name: Линтер (flake8)
+        run: flake8 .
+
+      - name: Проверка типов (mypy)
+        run: mypy
+
+      - name: Тесты (pytest)
+        run: pytest -q
+
+  deploy:
+    name: Деплой на Raspberry Pi
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, raspberry]
+    concurrency:
+      group: deploy-raspberry
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Подготовка .env
+        run: cp "$HOME/.config/ya2dlna/.env" .env
+
+      - name: Сборка образов
+        run: docker compose build
+
+      - name: Перезапуск сервисов
+        run: docker compose up -d
+
+      - name: Проверка живости сервисов
+        run: |
+          sleep 10
+          curl -sf -o /dev/null http://localhost:8001/docs
+          curl -sf -o /dev/null http://localhost:8080/docs
+          echo "✅ Оба сервиса отвечают"
+
+      - name: Чистка неиспользуемых образов
+        run: docker image prune -f
