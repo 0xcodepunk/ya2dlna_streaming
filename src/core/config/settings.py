@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def resolve_env_path() -> Path:
-    """Определяет путь к файлу .env"""
+    """Определяет путь к файлу .env."""
     cwd_env = Path.cwd() / ".env"
     if cwd_env.exists():
         return cwd_env
@@ -15,7 +15,7 @@ def resolve_env_path() -> Path:
 
 
 class Settings(BaseSettings):
-    """Конфигурация приложения"""
+    """Конфигурация приложения."""
 
     model_config = SettingsConfigDict(
         env_file=resolve_env_path(),

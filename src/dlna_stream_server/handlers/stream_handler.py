@@ -116,9 +116,9 @@ class StreamHandler:
             logger.exception(f"❌ Ошибка в мониторинге FFmpeg: {e}")
 
     async def _log_stderr(self, proc: asyncio.subprocess.Process):
-        """
-        Логирование stderr FFmpeg процесса
-        с фильтрацией по уровням важности.
+        """Логирование stderr FFmpeg процесса.
+
+        Строки фильтруются по уровням важности.
         """
         try:
             while True:
@@ -407,8 +407,8 @@ class StreamHandler:
         )
 
     async def stream_audio(self, radio: bool = False):
-        """
-        Отдаёт потоковый аудио-ответ клиенту.
+        """Отдаёт потоковый аудио-ответ клиенту.
+
         Реализована защита от залипания: если FFmpeg завершился
         или не даёт данных — поток закрывается.
         """

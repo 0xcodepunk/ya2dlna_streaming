@@ -20,7 +20,7 @@ _start_task: asyncio.Task | None = None
 
 @router.post("/stream_on")
 async def stream_on():
-    """API-команда для запуска стрима"""
+    """API-команда для запуска стрима."""
     global _start_task
     _start_task = asyncio.create_task(main_stream_manager.start())
     return {"status": "stream_on"}
@@ -28,6 +28,6 @@ async def stream_on():
 
 @router.post("/shutdown")
 async def shutdown():
-    """API-команда для остановки стрима"""
+    """API-команда для остановки стрима."""
     await main_stream_manager.stop()
     return {"status": "main_service stopped"}

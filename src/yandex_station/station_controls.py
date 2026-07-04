@@ -13,7 +13,7 @@ logger = getLogger(__name__)
 
 
 class YandexStationControls:
-    """Класс управления станцией через WebSocket"""
+    """Класс управления станцией через WebSocket."""
 
     _ws_client: YandexStationClient
     _protobuf: Protobuf
@@ -31,7 +31,7 @@ class YandexStationControls:
         self._was_muted = False
 
     async def start_ws_client(self):
-        """Запуск WebSocket-клиента"""
+        """Запуск WebSocket-клиента."""
         logger.info("🔄 Запуск WebSocket-клиента")
         await self._ws_client.run_once()
 
@@ -44,15 +44,15 @@ class YandexStationControls:
         await self._ws_client.close()
 
     async def play(self):
-        """Запуск воспроизведения"""
+        """Запуск воспроизведения."""
         await self._ws_client.send_command({"command": "play"})
 
     async def stop(self):
-        """Остановка воспроизведения"""
+        """Остановка воспроизведения."""
         await self._ws_client.send_command({"command": "stop"})
 
     async def send_text(self, text: str):
-        """Отправка текстового сообщения"""
+        """Отправка текстового сообщения."""
         logger.info(f"🔊 Отправка текстового сообщения: {text}")
         try:
             await self._ws_client.send_command(
@@ -62,7 +62,7 @@ class YandexStationControls:
             logger.error(f"❌ Ошибка при отправке текстового сообщения: {e}")
 
     async def get_current_state(self):
-        """Получение текущего состояния станции"""
+        """Получение текущего состояния станции."""
         try:
             state = await self._ws_client.get_latest_message()
             # logger.info(f"🎵 Состояние станции: {state}")
@@ -76,7 +76,7 @@ class YandexStationControls:
             )
 
     async def get_radio_url(self):
-        """Получение URL радиостанции"""
+        """Получение URL радиостанции."""
         try:
             data = await self._ws_client.get_latest_message()
             state = self._protobuf.loads(data["extra"]["appState"])
@@ -93,7 +93,7 @@ class YandexStationControls:
             return None
 
     async def get_alice_state(self):
-        """Получение состояния Алиса"""
+        """Получение состояния Алиса."""
         try:
             state = await self._ws_client.get_latest_message()
             if state:
@@ -103,7 +103,7 @@ class YandexStationControls:
             return None
 
     async def get_player_status(self) -> bool:
-        """Получение статуса плеера"""
+        """Получение статуса плеера."""
         try:
             state = await self.get_current_state()
             play_status = state.get("playing", {})
@@ -115,7 +115,7 @@ class YandexStationControls:
             return False
 
     async def get_current_track(self) -> Track | None:
-        """Получение текущего трека"""
+        """Получение текущего трека."""
         try:
             player_state = await self.get_player_status()
             # logger.info(f"🎵 Состояние плеера: {player_state}") # TODO: remove
@@ -135,7 +135,7 @@ class YandexStationControls:
             logger.error(f"❌ Ошибка при получении текущего трека: {e}")
 
     async def get_volume(self):
-        """Получение текущего уровня громкости"""
+        """Получение текущего уровня громкости."""
         try:
             state = await self._ws_client.get_latest_message()
             if state:
@@ -149,7 +149,7 @@ class YandexStationControls:
             return None
 
     async def set_default_volume(self):
-        """Установка громкости по умолчанию"""
+        """Установка громкости по умолчанию."""
         logger.info("🔊 Установка громкости по умолчанию")
         try:
             self._volume = await self.get_volume()
@@ -160,7 +160,7 @@ class YandexStationControls:
             )
 
     async def set_volume(self, volume: float):
-        """Установка уровня громкости"""
+        """Установка уровня громкости."""
         logger.info(f"🔊 Установка громкости на {volume}")
         try:
             await self._ws_client.send_command(
@@ -175,7 +175,7 @@ class YandexStationControls:
             logger.error(f"❌ Ошибка при установке громкости: {e}")
 
     async def mute(self):
-        """Безопасное выключение звука — только если Алиса молчит"""
+        """Безопасное выключение звука — только если Алиса молчит."""
         if self._was_muted:
             return
 
@@ -205,7 +205,7 @@ class YandexStationControls:
             logger.error(f"❌ Ошибка при включении громкости: {e}")
 
     async def fade_out_station(self):
-        """Плавное отключение звука станции с задержкой"""
+        """Плавное отключение звука станции с задержкой."""
         if self._was_muted:
             return
         logger.info(f"🎧 Ждём {FADE_TIME}s перед mute станции")
@@ -215,7 +215,7 @@ class YandexStationControls:
     async def fade_out_alice_volume(
         self, min_volume: float = 0.0, step: float = 0.1, delay: float = 0.3
     ):
-        """Плавное уменьшение громкости Алисы в несколько шагов"""
+        """Плавное уменьшение громкости Алисы в несколько шагов."""
         if self._was_muted:
             return
         logger.info(f"🎧 Ждём {FADE_TIME}s перед fade out громкости")

@@ -10,7 +10,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 
 def setup_logging():
-    """Настройка логирования"""
+    """Настройка логирования."""
     logging_config = {
         "version": 1,
         "disable_existing_loggers": True,

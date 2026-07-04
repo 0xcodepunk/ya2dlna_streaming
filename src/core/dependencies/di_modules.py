@@ -13,7 +13,7 @@ from yandex_station.station_ws_control import YandexStationClient
 
 
 class MainStreamManagerModule(Module):
-    """Класс для управления зависимостями MainStreamManager"""
+    """Класс для управления зависимостями MainStreamManager."""
 
     @singleton
     @provider
@@ -33,7 +33,7 @@ class MainStreamManagerModule(Module):
 
 
 class DeviceFinderModule(Module):
-    """Класс для управления зависимостями DeviceFinder"""
+    """Класс для управления зависимостями DeviceFinder."""
 
     @singleton
     @provider
@@ -42,7 +42,7 @@ class DeviceFinderModule(Module):
 
 
 class YandexStationClientModule(Module):
-    """Класс для управления зависимостями Yandex Station Client"""
+    """Класс для управления зависимостями Yandex Station Client."""
 
     @singleton
     @provider
@@ -51,7 +51,7 @@ class YandexStationClientModule(Module):
 
 
 class YandexStationControlsModule(Module):
-    """Класс для управления зависимостями Yandex Station Controls"""
+    """Класс для управления зависимостями Yandex Station Controls."""
 
     @singleton
     @provider
@@ -62,7 +62,7 @@ class YandexStationControlsModule(Module):
 
 
 class YandexMusicAPIModule(Module):
-    """Класс для управления зависимостями Yandex Music API"""
+    """Класс для управления зависимостями Yandex Music API."""
 
     @singleton
     @provider
@@ -72,7 +72,7 @@ class YandexMusicAPIModule(Module):
 
 
 class RuarkR5ControllerModule(Module):
-    """Класс для управления зависимостями RuarkR5Controller"""
+    """Класс для управления зависимостями RuarkR5Controller."""
 
     @singleton
     @provider
@@ -83,7 +83,7 @@ class RuarkR5ControllerModule(Module):
 
 
 class StreamHandlerModule(Module):
-    """Класс для управления зависимостями StreamHandler"""
+    """Класс для управления зависимостями StreamHandler."""
 
     @singleton
     @provider
@@ -94,7 +94,7 @@ class StreamHandlerModule(Module):
 
 
 class ProtobufModule(Module):
-    """Класс для управления зависимостями Protobuf"""
+    """Класс для управления зависимостями Protobuf."""
 
     @singleton
     @provider

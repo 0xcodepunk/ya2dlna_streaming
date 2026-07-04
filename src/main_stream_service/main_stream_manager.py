@@ -20,7 +20,7 @@ logger = getLogger(__name__)
 
 
 class MainStreamManager:
-    """Класс для управления стримингом"""
+    """Класс для управления стримингом."""
 
     _ws_client: YandexStationClient
     _station_controls: YandexStationControls
@@ -50,7 +50,7 @@ class MainStreamManager:
         self._tasks = []  # Хранение фоновых задач
 
     async def start(self):
-        """Запуск всех стриминговых процессов"""
+        """Запуск всех стриминговых процессов."""
         if self._stream_state_running or self._tasks:
             logger.info("⚠️ Стриминг уже запущен")
             return
@@ -67,7 +67,7 @@ class MainStreamManager:
         self._tasks.extend([stream_task])
 
     async def stop(self):
-        """Остановка всех стриминговых процессов"""
+        """Остановка всех стриминговых процессов."""
         logger.info("🛑 Остановка стриминга...")
         self._stream_state_running = False
         await self._ruark_controls.stop()
@@ -87,7 +87,7 @@ class MainStreamManager:
         logger.info("✅ Стриминг остановлен")
 
     async def streaming(self):
-        """Основной поток управления стримингом"""
+        """Основной поток управления стримингом."""
         try:
             logger.info("📡 Поток streaming() стартовал")
             await self._prepare_devices()
@@ -267,9 +267,7 @@ class MainStreamManager:
             raise
 
     async def _wrap_streaming(self):
-        """Обёртка, которая следит за потоком стриминга и
-        перезапускает его при падении.
-        """
+        """Следит за потоком стриминга и перезапускает его при падении."""
         while self._stream_state_running:
             try:
                 logger.info("🚀 Запуск потока стриминга")
@@ -298,7 +296,7 @@ class MainStreamManager:
     async def _send_track_to_stream_server(
         self, track_url: str, radio: bool = False
     ):
-        """Отправляет ссылку на трек на стрим сервер"""
+        """Отправляет ссылку на трек на стрим сервер."""
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -322,7 +320,7 @@ class MainStreamManager:
             return None
 
     async def _stop_stream_on_stream_server(self):
-        """Останавливает стрим на стрим сервере"""
+        """Останавливает стрим на стрим сервере."""
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://{self._stream_server_url}:"

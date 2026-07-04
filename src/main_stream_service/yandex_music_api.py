@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 class YandexMusicAPI:
-    """Класс для работы с API Яндекс.Музыки"""
+    """Класс для работы с API Яндекс.Музыки."""
 
     _client: ClientAsync
 

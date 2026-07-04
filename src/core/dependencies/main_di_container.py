@@ -12,7 +12,7 @@ from core.dependencies.di_modules import (
 
 
 class MainDIContainer:
-    """Контейнер со всеми зависимостями (Singleton)"""
+    """Контейнер со всеми зависимостями (Singleton)."""
 
     _instance = None
     _container: Injector = None  # DI-контейнер
@@ -28,7 +28,7 @@ class MainDIContainer:
     ]
 
     def __new__(cls, additional_modules: list[Module] = None):
-        """Гарантирует, что контейнер создаётся один раз"""
+        """Гарантирует, что контейнер создаётся один раз."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
 
@@ -44,5 +44,5 @@ class MainDIContainer:
         return cls._instance
 
     def get_container(self) -> Injector:
-        """Возвращает общий DI-контейнер"""
+        """Возвращает общий DI-контейнер."""
         return self._container
