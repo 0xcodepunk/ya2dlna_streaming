@@ -14,11 +14,15 @@ di_container = MainDIContainer().get_container()
 
 main_stream_manager = di_container.get(MainStreamManager)
 
+# Ссылка на задачу запуска, чтобы её не собрал сборщик мусора
+_start_task: asyncio.Task | None = None
+
 
 @router.post("/stream_on")
 async def stream_on():
     """API-команда для запуска стрима"""
-    asyncio.create_task(main_stream_manager.start())
+    global _start_task
+    _start_task = asyncio.create_task(main_stream_manager.start())
     return {"status": "stream_on"}
 
 

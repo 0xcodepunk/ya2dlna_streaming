@@ -1,13 +1,32 @@
-import asyncio
 import re
+import urllib.parse
 from logging import getLogger
 
 import aiohttp
 from fastapi import Request
 
-from src.dlna_stream_server.handlers.constants import BASE_URL
-
 logger = getLogger(__name__)
+
+INDEX_URL_PATTERN = re.compile(r"(/kal/[^/]+/[^/]+/index-[\w\-]+\.m3u8\?\S*)")
+
+
+def extract_index_url(playlist_url: str, playlist_text: str) -> str:
+    """Извлекает абсолютный URL index-*.m3u8 из текста мастер-плейлиста.
+
+    Args:
+        playlist_url (str): URL, с которого получен плейлист.
+        playlist_text (str): Текст мастер-плейлиста.
+    Returns:
+        str: Абсолютный URL index-*.m3u8.
+    Raises:
+        ValueError: Если путь index-*.m3u8 не найден в плейлисте.
+    """
+    match = INDEX_URL_PATTERN.search(playlist_text)
+    if not match:
+        raise ValueError(
+            "Не найден полный путь index-*.m3u8 в мастер-плейлисте"
+        )
+    return urllib.parse.urljoin(playlist_url, match.group(1))
 
 
 async def get_latest_index_url(master_url: str) -> str:
@@ -16,34 +35,21 @@ async def get_latest_index_url(master_url: str) -> str:
         f"🔍 Получаем последний index-*.m3u8 из мастер-плейлиста: {master_url}"
     )
     async with aiohttp.ClientSession() as client:
-        response = await client.get(master_url)
-        response.raise_for_status()
-        response_string = await response.text()
-    pattern = r'(/kal/[^/]+/[^/]+/index-[\w\d\-]+\.m3u8\?[^\s]*)'
-    m = re.search(pattern, response_string)
-    if not m:
-        raise ValueError(
-            "Не найден полный путь index-*.m3u8 в мастер-плейлисте"
-        )
-    # Получаем базовый URL из исходного master_url
-    full_url = f"{BASE_URL}{m.group(1)}"
+        async with client.get(master_url) as response:
+            response.raise_for_status()
+            playlist_text = await response.text()
+            # База для относительных путей — конечный URL после редиректов
+            final_url = str(response.url)
+    full_url = extract_index_url(final_url, playlist_text)
     logger.info(f"🔍 Найденный полный URL: {full_url}")
     return full_url
 
 
-if __name__ == "__main__":
-    asyncio.run(get_latest_index_url())
-
-
-async def ruark_r5_request_logger(request: Request):
+async def ruark_r5_request_logger(request: Request) -> None:
+    """Логирует параметры входящего запроса от Ruark R5."""
+    logger.info(
+        f"ℹ️ User-Agent: {request.headers.get('user-agent', 'unknown')}"
+    )
+    logger.info(f"ℹ️ URL запроса: {request.url}")
+    logger.info(f"ℹ️ Метод запроса: {request.method}")
     logger.info(f"ℹ️ Заголовки запроса: {request.headers}")
-    # Получаем тело запроса
-    user_agent = request.headers.get("user-agent", "unknown")
-    url = request.url
-    method = request.method
-    headers = request.headers
-
-    logger.info(f"ℹ️ User-Agent: {user_agent}")
-    logger.info(f"ℹ️ URL запроса: {url}")
-    logger.info(f"ℹ️ Метод запроса: {method}")
-    logger.info(f"ℹ️ Заголовки запроса: {headers}")

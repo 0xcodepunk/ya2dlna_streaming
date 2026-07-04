@@ -340,13 +340,14 @@ class YandexStationClient:
                         f"❌ WebSocket закрыт станцией (CLOSED): "
                         f"{msg}"
                     )
-                    total_seconds = time.monotonic() - self._connected_at
-                    minutes = total_seconds // 60
-                    seconds = total_seconds % 60
-                    logger.warning(
-                        f"⌛️ Время работы WebSocket: {minutes:.0f} минут, "
-                        f"секунд: {seconds:.1f}"
-                    )
+                    if self._connected_at is not None:
+                        total_seconds = time.monotonic() - self._connected_at
+                        minutes = total_seconds // 60
+                        seconds = total_seconds % 60
+                        logger.warning(
+                            f"⌛️ Время работы WebSocket: {minutes:.0f} минут, "
+                            f"секунд: {seconds:.1f}"
+                        )
                     self.reconnect_required = True
                     self.running = False
                     break

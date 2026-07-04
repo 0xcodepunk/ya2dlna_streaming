@@ -41,8 +41,9 @@ class RuarkR5Controller:
             device_name=self.device_name
         )
         if not self.device:
-            logger.warning(f"⚠ Устройство '{self.device.friendly_name}' "
-                           f"не найдено в сети!")
+            logger.warning(
+                f"⚠ Устройство '{self.device_name}' не найдено в сети!"
+            )
             return
 
         self.ip = self.get_device_ip()

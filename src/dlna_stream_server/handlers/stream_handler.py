@@ -305,10 +305,8 @@ class StreamHandler:
 
         if self._ffmpeg_process:
             proc = self._ffmpeg_process
-            monitor_task = self._monitor_task
-            # Сбрасываем состояние сразу
+            # Сбрасываем состояние сразу (монитор уже отменён выше)
             self._ffmpeg_process = None
-            self._monitor_task = None
             self._current_url = None
             self._current_radio = False
             self._radio_url = None
@@ -316,7 +314,7 @@ class StreamHandler:
 
             logger.info("⏹ Останавливаем текущий поток FFmpeg...")
 
-            await self._stop_ffmpeg_background(proc, monitor_task)
+            await self._stop_ffmpeg_background(proc, None)
 
     async def start_ffmpeg_stream(self, yandex_url: str, radio: bool = False):
         """Запускает потоковую передачу через FFmpeg."""

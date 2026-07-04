@@ -102,9 +102,16 @@ class MainStreamManager:
             last_track_progress = 0
             volume_set_count = 0
             speak_count = 0
+            track_url: str | None = None
 
             while self._stream_state_running:
                 track = await self._station_controls.get_current_track()
+                if track is None:
+                    logger.warning(
+                        "⚠️ Нет данных о треке, пропускаем итерацию"
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
                 current_alice_state = (
                     await self._station_controls.get_alice_state()
                 )
@@ -141,13 +148,11 @@ class MainStreamManager:
                                 if not await self._recover_stuck_track(
                                     track, last_track_progress
                                 ):
-                                    stuck_track_count = 0
-                                else:
                                     logger.warning(
                                         "⚠️ Не удалось перезапустить трек "
                                         "через stop/play"
                                     )
-                                    stuck_track_count = 0
+                                stuck_track_count = 0
 
                     if (
                         last_track_progress != track.progress
@@ -205,7 +210,16 @@ class MainStreamManager:
                                 "⚠️ Ruark так и не начал играть, "
                                 "перезапуск трека на стрим сервере"
                             )
-                            await self._send_track_to_stream_server(track_url)
+                            if track_url:
+                                await self._send_track_to_stream_server(
+                                    track_url,
+                                    radio=track.type == "FmRadio",
+                                )
+                            else:
+                                logger.warning(
+                                    "⚠️ Нет сохранённого URL трека "
+                                    "для перезапуска"
+                                )
                             await self._station_controls.\
                                 fade_out_alice_volume()
                             speak_count = 0
