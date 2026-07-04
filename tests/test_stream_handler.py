@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from dlna_stream_server.handlers.stream_handler import StreamHandler
+from dlna_stream_server.handlers.constants import FFMPEG_MP3_PARAMS
+from dlna_stream_server.handlers.stream_handler import (
+    StreamHandler,
+    _insert_start_position,
+)
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
 # Настоящий sleep сохраняется до подмены в фикстуре fast_sleep
@@ -135,3 +139,16 @@ async def test_play_stream_points_ruark_at_local_stream():
     assert "radio=false" in stream_url
     ruark.play.assert_called()
     await handler.stop_ffmpeg()
+
+
+def test_insert_start_position_places_ss_before_input():
+    params = _insert_start_position(FFMPEG_MP3_PARAMS, 42.5)
+    ss_index = params.index("-ss")
+    assert params[ss_index + 1] == "42.5"
+    assert params[ss_index + 2] == "-i"
+
+
+def test_insert_start_position_zero_keeps_params_unchanged():
+    assert _insert_start_position(FFMPEG_MP3_PARAMS, 0.0) == list(
+        FFMPEG_MP3_PARAMS
+    )

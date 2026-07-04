@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import dataclass
 from logging import getLogger
 
@@ -11,7 +12,9 @@ from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
+    PROGRESS_JUMP_THRESHOLD,
     RUARK_IDLE_VOLUME,
+    STREAM_POLL_INTERVAL,
     STREAMING_RESTART_DELAY,
 )
 from yandex_station.models import Track
@@ -28,10 +31,14 @@ class _CycleContext:
     last_track: Track
     last_alice_state: str | None
     last_track_progress: float = 0.0
+    # Момент снятия снапшота прогресса (time.monotonic)
+    last_progress_at: float = 0.0
+    last_track_playing: bool = False
     stuck_track_count: int = 0
     volume_set_count: int = 0
     speak_count: int = 0
     track_url: str | None = None
+    last_log_signature: tuple[str, bool, str | None] | None = None
 
 
 class MainStreamManager:
@@ -138,7 +145,7 @@ class MainStreamManager:
                     logger.warning(
                         "⚠️ Нет данных о треке, пропускаем итерацию"
                     )
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(STREAM_POLL_INTERVAL)
                     continue
                 alice_state = await self._station_controls.get_alice_state()
 
@@ -149,13 +156,12 @@ class MainStreamManager:
 
                 await self._unmute_before_track_end(track, alice_state)
 
-                self._log_current_track(
-                    track, alice_state, ctx.last_alice_state
-                )
+                self._log_current_track(track, alice_state, ctx)
                 ctx.last_track_progress = track.progress
+                ctx.last_progress_at = time.monotonic()
+                ctx.last_track_playing = track.playing
                 ctx.last_alice_state = alice_state
-                logger.debug("💤 Цикл стриминга работает")
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(STREAM_POLL_INTERVAL)
 
         except asyncio.CancelledError:
             logger.info("🛑 Стриминг завершён по команде остановки")
@@ -192,6 +198,7 @@ class MainStreamManager:
         await self._stop_or_recover_paused_track(track, ctx)
         await self._resume_radio_if_silent(track, ctx)
         track = await self._refresh_track_if_unchanged(track, ctx)
+        await self._resync_after_progress_jump(track, ctx)
         await self._switch_to_new_track(track, ctx)
         await self._restore_ruark_after_speech(track, ctx)
         await self._fade_alice_if_playing(track)
@@ -253,10 +260,59 @@ class MainStreamManager:
         refreshed_track = await self._station_controls.get_current_track()
         return refreshed_track if refreshed_track is not None else track
 
+    async def _resync_after_progress_jump(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> None:
+        """Перезапускает локальный стрим с текущей позиции трека.
+
+        Ловит разрывы, при которых id трека не меняется: повтор
+        (прогресс к нулю), перемотку (скачок в любую сторону)
+        и продолжение после паузы. Прогресс сравнивается с ожидаемым
+        значением с учётом времени, прошедшего со снапшота, — иначе
+        долгая итерация (fade, запросы) выглядела бы как скачок.
+        """
+        if track.type == "FmRadio" or not track.playing:
+            return
+        if track.id != ctx.last_track.id:
+            return
+
+        resumed = not ctx.last_track_playing
+        elapsed = time.monotonic() - ctx.last_progress_at
+        expected_progress = ctx.last_track_progress + elapsed
+        jumped = (
+            abs(track.progress - expected_progress) > PROGRESS_JUMP_THRESHOLD
+        )
+        if not (resumed or jumped):
+            return
+
+        reason = "продолжение после паузы" if resumed else "разрыв прогресса"
+        logger.info(
+            f"🔁 Ресинк стрима ({reason}): ожидали "
+            f"~{expected_progress:.0f}s, станция на {track.progress:.0f}s"
+        )
+        track_url = await self._yandex_music_api.get_file_info(
+            track_id=track.id,
+            quality=settings.stream_quality,
+        )
+        if not track_url:
+            logger.warning("⚠️ Не удалось получить URL трека для ресинка")
+            return
+
+        ctx.track_url = track_url
+        await self._send_track_to_stream_server(
+            track_url,
+            radio=False,
+            start_position=track.progress,
+        )
+
     async def _switch_to_new_track(
         self, track: Track, ctx: "_CycleContext"
     ) -> None:
-        """Отправляет новый трек на стрим сервер при смене id."""
+        """Отправляет новый трек на стрим сервер при смене id.
+
+        Если станция уже в глубине трека (стрим включили посреди
+        проигрывания), поток стартует с её текущей позиции.
+        """
         if not (ctx.last_track.id != track.id and track.playing):
             return
 
@@ -270,9 +326,20 @@ class MainStreamManager:
             )
 
         if ctx.track_url:
+            start_position = 0.0
+            if (
+                track.type != "FmRadio"
+                and track.progress > PROGRESS_JUMP_THRESHOLD
+            ):
+                start_position = track.progress
+                logger.info(
+                    f"▶️ Трек уже играет на станции, продолжаем "
+                    f"с {start_position:.0f}s"
+                )
             await self._send_track_to_stream_server(
                 ctx.track_url,
                 radio=track.type == "FmRadio",
+                start_position=start_position,
             )
             ctx.last_track = track
         else:
@@ -302,9 +369,14 @@ class MainStreamManager:
                     "перезапуск трека на стрим сервере"
                 )
                 if ctx.track_url:
+                    # Для трека продолжаем с текущей позиции станции,
+                    # а не с начала — иначе рассинхрон
                     await self._send_track_to_stream_server(
                         ctx.track_url,
                         radio=track.type == "FmRadio",
+                        start_position=(
+                            track.progress if track.type != "FmRadio" else 0.0
+                        ),
                     )
                 else:
                     logger.warning(
@@ -371,10 +443,18 @@ class MainStreamManager:
         self._ruark_volume = await self._ruark_controls.get_volume()
 
     async def _send_track_to_stream_server(
-        self, track_url: str, radio: bool = False
+        self,
+        track_url: str,
+        radio: bool = False,
+        start_position: float = 0.0,
     ):
-        """Отправляет ссылку на трек на стрим сервер."""
+        """Отправляет ссылку на трек на стрим сервер.
 
+        Args:
+            track_url (str): Прямая ссылка на источник потока.
+            radio (bool): Режим радио.
+            start_position (float): Позиция старта в секундах.
+        """
         try:
             async with aiohttp.ClientSession() as session:
                 logger.info(f"🎵 Отправляем трек на стрим сервер: {track_url}")
@@ -384,6 +464,7 @@ class MainStreamManager:
                     params={
                         "yandex_url": track_url,
                         "radio": str(radio).lower(),
+                        "start_position": f"{start_position:.1f}",
                     },
                 ) as resp:
                     response = await resp.json()
@@ -436,12 +517,19 @@ class MainStreamManager:
         self,
         track: Track,
         state: str | None,
-        last_state: str | None,
+        ctx: "_CycleContext",
     ):
-        logger.info(
+        """Логирует состояние: INFO при изменении, DEBUG на каждом тике."""
+        message = (
             f"🎵 Сейчас играет: {track.id} - {track.artist} - "
             f"{track.title} - {track.progress}/{track.duration}, "
             f"статус Алисы: {state}, "
-            f"предыдущий статус Алисы: {last_state}, "
+            f"предыдущий статус Алисы: {ctx.last_alice_state}, "
             f"проигрывание: {track.playing}"
         )
+        signature = (track.id, track.playing, state)
+        if signature != ctx.last_log_signature:
+            logger.info(message)
+            ctx.last_log_signature = signature
+        else:
+            logger.debug(message)

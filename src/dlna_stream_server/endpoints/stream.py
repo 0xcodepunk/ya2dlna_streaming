@@ -25,10 +25,11 @@ async def _handle_stream_task(
     yandex_url: str,
     task_id: str,
     radio: bool = False,
+    start_position: float = 0.0,
 ):
     """Обработчик задачи потока с логированием ошибок."""
     try:
-        await stream_handler.play_stream(yandex_url, radio)
+        await stream_handler.play_stream(yandex_url, radio, start_position)
         logger.info(f"✅ Задача потока {task_id} завершена успешно")
     except Exception as e:
         logger.exception(f"❌ Ошибка в задаче потока {task_id}: {e}")
@@ -38,9 +39,21 @@ async def _handle_stream_task(
 
 
 @router.post("/set_stream")
-async def set_stream(request: Request, yandex_url: str, radio: bool = False):
-    """Принимает URL трека и запускает потоковую передачу на Ruark."""
-    logger.info(f"📥 Запуск нового потока с {yandex_url}")
+async def set_stream(
+    request: Request,
+    yandex_url: str,
+    radio: bool = False,
+    start_position: float = 0.0,
+):
+    """Принимает URL трека и запускает потоковую передачу на Ruark.
+
+    start_position — позиция старта в секундах для ресинка
+    (повтор, перемотка, продолжение после паузы).
+    """
+    logger.info(
+        f"📥 Запуск нового потока с {yandex_url} "
+        f"(позиция: {start_position:.1f}s)"
+    )
 
     # Генерируем уникальный ID для задачи
     task_id = f"stream_{len(_active_tasks)}"
@@ -55,7 +68,11 @@ async def set_stream(request: Request, yandex_url: str, radio: bool = False):
     # Запускаем новую задачу
     task = asyncio.create_task(
         _handle_stream_task(
-            _get_stream_handler(request), yandex_url, task_id, radio
+            _get_stream_handler(request),
+            yandex_url,
+            task_id,
+            radio,
+            start_position,
         )
     )
     _active_tasks[task_id] = task

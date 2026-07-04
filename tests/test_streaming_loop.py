@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from main_stream_service.main_stream_manager import MainStreamManager
+from main_stream_service.main_stream_manager import (
+    MainStreamManager,
+    _CycleContext,
+)
 from main_stream_service.yandex_music_api import YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import RUARK_IDLE_VOLUME
@@ -39,8 +42,12 @@ def make_track(**kwargs) -> Track:
     return Track(**defaults)
 
 
-def make_station_controls(track, alice_states=("IDLE",)):
-    """Фейк станции: alice_states выдаются по очереди, последний повторяется."""
+def make_station_controls(track=None, alice_states=("IDLE",), tracks=None):
+    """Фейк станции.
+
+    alice_states и tracks выдаются по очереди, последний элемент
+    повторяется бесконечно.
+    """
     controls = AsyncMock(spec=YandexStationControls)
     states = list(alice_states)
 
@@ -48,7 +55,17 @@ def make_station_controls(track, alice_states=("IDLE",)):
         return states.pop(0) if len(states) > 1 else states[0]
 
     controls.get_alice_state.side_effect = next_state
-    controls.get_current_track.return_value = track
+
+    if tracks is not None:
+        queue = list(tracks)
+
+        async def next_track():
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+
+        controls.get_current_track.side_effect = next_track
+    else:
+        controls.get_current_track.return_value = track
+
     controls.get_volume.return_value = 0.5
     controls.get_radio_url.return_value = "http://radio/master.m3u8"
     return controls
@@ -90,7 +107,7 @@ async def drive_streaming(manager, until, timeout=1.0):
 
 
 async def test_new_track_sent_to_stream_server(fast_sleep):
-    track = make_track()
+    track = make_track(progress=2.0)
     station = make_station_controls(track)
     manager = make_manager(station, make_ruark())
 
@@ -101,9 +118,11 @@ async def test_new_track_sent_to_stream_server(fast_sleep):
     manager._yandex_music_api.get_file_info.assert_called()
     call = manager._yandex_music_api.get_file_info.call_args
     assert call.kwargs["track_id"] == "42"
-    manager._send_track_to_stream_server.assert_any_call(
-        "http://track/url", radio=False
-    )
+    send_call = manager._send_track_to_stream_server.call_args_list[0]
+    assert send_call.args[0] == "http://track/url"
+    assert send_call.kwargs["radio"] is False
+    # Свежий трек (прогресс ниже порога) стартует с начала
+    assert send_call.kwargs["start_position"] == pytest.approx(0.0)
 
 
 async def test_radio_track_sent_with_radio_flag(fast_sleep):
@@ -171,3 +190,118 @@ async def test_missing_track_data_keeps_loop_alive(fast_sleep):
 
     manager._send_track_to_stream_server.assert_not_called()
     manager._ruark_controls.stop.assert_not_called()
+
+
+async def test_track_repeat_resyncs_stream_from_start(fast_sleep):
+    # Повтор трека: id не меняется, прогресс скачет к началу
+    tracks = [make_track(progress=100.0)] * 4 + [make_track(progress=2.0)]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    def resync_happened():
+        return any(
+            call.kwargs.get("start_position") == pytest.approx(2.0)
+            for call in send.call_args_list
+        )
+
+    await drive_streaming(manager, until=resync_happened)
+
+    assert resync_happened(), "ресинк не сработал"
+
+
+async def test_seek_forward_resyncs_stream_at_new_position(fast_sleep):
+    tracks = [make_track(progress=10.0)] * 4 + [make_track(progress=120.0)]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    def resync_happened():
+        return any(
+            call.kwargs.get("start_position") == pytest.approx(120.0)
+            for call in send.call_args_list
+        )
+
+    await drive_streaming(manager, until=resync_happened)
+
+    assert resync_happened(), "ресинк не сработал"
+
+
+async def test_resume_after_pause_resyncs_stream(fast_sleep):
+    tracks = (
+        [make_track(progress=50.0)] * 4
+        + [make_track(progress=50.0, playing=False)] * 6
+        + [make_track(progress=51.0)]
+    )
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    def resync_happened():
+        return any(
+            call.kwargs.get("start_position") == pytest.approx(51.0)
+            for call in send.call_args_list
+        )
+
+    await drive_streaming(manager, until=resync_happened)
+
+    assert resync_happened(), "ресинк не сработал"
+
+
+async def test_normal_playback_does_not_trigger_resync(fast_sleep):
+    tracks = [make_track(progress=float(p)) for p in range(10, 40)]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.2)
+
+    # Только первоначальная отправка трека, без ресинков
+    assert send.call_count == 1
+
+
+async def test_resync_ignores_stale_progress_snapshot():
+    """Долгая итерация не должна выглядеть как скачок прогресса."""
+    manager = make_manager(make_station_controls(make_track()), make_ruark())
+    ctx = _CycleContext(
+        last_track=make_track(progress=0.0),
+        last_alice_state="IDLE",
+        last_track_progress=0.0,
+        last_progress_at=time.monotonic() - 6.0,  # снапшот протух на 6с
+        last_track_playing=True,
+    )
+
+    # Станция уехала на ~6с за 6с реального времени — это не скачок
+    await manager._resync_after_progress_jump(make_track(progress=6.0), ctx)
+
+    manager._send_track_to_stream_server.assert_not_called()
+
+
+async def test_resync_detects_real_jump_with_fresh_snapshot():
+    manager = make_manager(make_station_controls(make_track()), make_ruark())
+    ctx = _CycleContext(
+        last_track=make_track(progress=10.0),
+        last_alice_state="IDLE",
+        last_track_progress=10.0,
+        last_progress_at=time.monotonic() - 0.5,
+        last_track_playing=True,
+    )
+
+    await manager._resync_after_progress_jump(make_track(progress=120.0), ctx)
+
+    send = manager._send_track_to_stream_server
+    send.assert_called_once()
+    assert send.call_args.kwargs["start_position"] == pytest.approx(120.0)
+
+
+async def test_stream_start_midtrack_continues_from_position(fast_sleep):
+    """Стрим включён посреди трека — Ruark продолжает с позиции станции."""
+    track = make_track(progress=120.0)
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: send.called)
+
+    first_call = send.call_args_list[0]
+    assert first_call.kwargs["start_position"] == pytest.approx(120.0)
