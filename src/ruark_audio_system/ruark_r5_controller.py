@@ -9,6 +9,7 @@ import upnpclient
 
 from core.config.settings import settings
 from ruark_audio_system.constants import META_INFO
+from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 
 SESSION_ID_REGEX = re.compile(r"<sessionId>(.*?)</sessionId>")
 POWER_STATUS_REGEX = re.compile(r"<value><u8>(.*?)</u8></value>")
@@ -26,17 +27,79 @@ class RuarkR5Controller:
     _session_id: str
 
     def __init__(self, device_name: str = "Ruark R5") -> None:
-        """Инициализация и поиск устройства Ruark R5 в сети."""
+        """Сохраняет имя устройства; поиск в сети выполняется в connect()."""
         self.device_name = device_name
-        self.refresh_device()
-        self.print_available_services()
+        self.device: Optional[upnpclient.Device] = None
+        self.ip: Optional[str] = None
+        self.services: Dict[str, Any] = {}
+        self._av_transport: Any = None
+        self._connection_manager: Any = None
+        self._rendering_control: Any = None
+
+    @property
+    def av_transport(self) -> Any:
+        """Сервис AVTransport найденного устройства."""
+        return self._require_service(self._av_transport, "AVTransport")
+
+    @property
+    def connection_manager(self) -> Any:
+        """Сервис ConnectionManager найденного устройства."""
+        return self._require_service(
+            self._connection_manager, "ConnectionManager"
+        )
+
+    @property
+    def rendering_control(self) -> Any:
+        """Сервис RenderingControl найденного устройства."""
+        return self._require_service(
+            self._rendering_control, "RenderingControl"
+        )
+
+    def _require_service(self, service: Any, name: str) -> Any:
+        """Возвращает сервис или бросает ошибку, если устройство не найдено.
+
+        Raises:
+            RuarkDeviceNotFoundError: Если устройство ещё не найдено в сети.
+        """
+        if service is None:
+            raise RuarkDeviceNotFoundError(
+                f"Устройство '{self.device_name}' не найдено в сети — "
+                f"сервис {name} недоступен, вызовите connect()"
+            )
+        return service
+
+    async def connect(self, attempts: int = 3, delay: float = 2.0) -> bool:
+        """Ищет устройство в сети с несколькими попытками.
+
+        Args:
+            attempts (int): Количество попыток поиска.
+            delay (float): Пауза между попытками в секундах.
+        Returns:
+            bool: True, если устройство найдено.
+        """
+        if self.device:
+            return True
+
+        for attempt in range(1, attempts + 1):
+            logger.info(
+                f"🔍 Поиск {self.device_name}: попытка {attempt}/{attempts}"
+            )
+            await asyncio.to_thread(self.refresh_device)
+            if self.device:
+                self.print_available_services()
+                return True
+            if attempt < attempts:
+                await asyncio.sleep(delay)
+
+        logger.error(
+            f"❌ {self.device_name} не найден после {attempts} попыток"
+        )
+        return False
 
     def refresh_device(self) -> None:
         """Обновление устройства."""
         logger.info("🔄 Обновление устройства")
-        self.device: Optional[upnpclient.Device] = self.find_device(
-            device_name=self.device_name
-        )
+        self.device = self.find_device(device_name=self.device_name)
         if not self.device:
             logger.warning(
                 f"⚠ Устройство '{self.device_name}' не найдено в сети!"
@@ -44,16 +107,16 @@ class RuarkR5Controller:
             return
 
         self.ip = self.get_device_ip()
-        self.services: Dict[str, Any] = {
+        self.services = {
             service.service_type: service for service in self.device.services
         }
-        self.av_transport = self.services.get(
+        self._av_transport = self.services.get(
             "urn:schemas-upnp-org:service:AVTransport:1"
         )
-        self.connection_manager = self.services.get(
+        self._connection_manager = self.services.get(
             "urn:schemas-upnp-org:service:ConnectionManager:1"
         )
-        self.rendering_control = self.services.get(
+        self._rendering_control = self.services.get(
             "urn:schemas-upnp-org:service:RenderingControl:1"
         )
         logger.info(

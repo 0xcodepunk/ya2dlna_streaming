@@ -6,6 +6,7 @@ from injector import inject
 
 from core.config.settings import settings
 from main_stream_service.yandex_music_api import YandexMusicAPI
+from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
@@ -56,11 +57,21 @@ class MainStreamManager:
             return
 
         logger.info("🎵 Запуск стриминга")
-        self._stream_state_running = True
+        try:
+            # Поиск устройств выполняется здесь, а не при старте процесса
+            if not await self._ruark_controls.connect():
+                raise RuarkDeviceNotFoundError(
+                    f"Устройство "
+                    f"'{self._ruark_controls.device_name}' "
+                    f"не найдено в сети"
+                )
+            logger.info("🔄 Запуск WebSocket клиента")
+            await self._station_controls.start_ws_client()
+        except Exception as e:
+            logger.error(f"❌ Не удалось запустить стриминг: {e}")
+            return
 
-        # Запуск WebSocket-клиента
-        logger.info("🔄 Запуск WebSocket клиента")
-        await self._station_controls.start_ws_client()
+        self._stream_state_running = True
         logger.info("🎬 Запуск обёртки стриминга")
         stream_task = asyncio.create_task(self._wrap_streaming())
         logger.info("✅ WebSocket клиент запущен")

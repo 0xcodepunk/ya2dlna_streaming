@@ -1,6 +1,6 @@
 import ipaddress
 from logging import getLogger
-from time import sleep
+from time import monotonic, sleep
 
 from zeroconf import (
     ServiceBrowser,
@@ -18,13 +18,33 @@ class DeviceFinder(ServiceListener):
     def __init__(self):
         self.device = {}
         self.zeroconf = Zeroconf()
+        self.browser: ServiceBrowser | None = None
 
-    def find_devices(self, type_="_yandexio._tcp.local."):
-        """Поиск устройств Yandex Station в сети."""
-        self.browser = ServiceBrowser(
-            zc=self.zeroconf, type_=type_, handlers=[self._handler_device]
-        )
-        sleep(1)
+    def find_devices(
+        self,
+        type_: str = "_yandexio._tcp.local.",
+        timeout: float = 5.0,
+    ) -> bool:
+        """Ищет устройство Yandex Station не дольше timeout секунд.
+
+        Блокирующий вызов, запускать через asyncio.to_thread.
+
+        Args:
+            type_ (str): Тип mDNS-сервиса для поиска.
+            timeout (float): Максимальное время ожидания в секундах.
+        Returns:
+            bool: True, если устройство найдено.
+        """
+        if self.device:
+            return True
+        if self.browser is None:
+            self.browser = ServiceBrowser(
+                zc=self.zeroconf, type_=type_, handlers=[self._handler_device]
+            )
+        deadline = monotonic() + timeout
+        while not self.device and monotonic() < deadline:
+            sleep(0.1)
+        return bool(self.device)
 
     def _handler_device(
         self,
