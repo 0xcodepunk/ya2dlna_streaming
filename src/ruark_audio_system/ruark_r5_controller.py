@@ -1,22 +1,14 @@
 import asyncio
-import re
 import urllib.parse
 from logging import getLogger
 from typing import Any, Dict, List, Literal, Optional
 
-import aiohttp
 import upnpclient
 
 from core.config.settings import settings
 from ruark_audio_system.constants import META_INFO
-from ruark_audio_system.exceptions import (
-    RuarkApiError,
-    RuarkDeviceNotFoundError,
-)
-
-SESSION_ID_REGEX = re.compile(r"<sessionId>(.*?)</sessionId>")
-POWER_STATUS_REGEX = re.compile(r"<value><u8>(.*?)</u8></value>")
-
+from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
+from ruark_audio_system.fsapi_client import RuarkFsApiClient
 
 logger = getLogger(__name__)
 
@@ -25,9 +17,11 @@ SeekUnitType = Literal["REL_TIME", "ABS_TIME", "ABS_COUNT", "TRACK_NR"]
 
 
 class RuarkR5Controller:
-    """Класс для управления устройством Ruark R5."""
+    """Класс для управления устройством Ruark R5.
 
-    _session_id: str
+    UPnP-команды выполняются напрямую, HTTP API fsapi (сессия, питание)
+    делегируется RuarkFsApiClient.
+    """
 
     def __init__(self, device_name: str = "Ruark R5") -> None:
         """Сохраняет имя устройства; поиск в сети выполняется в connect()."""
@@ -38,6 +32,7 @@ class RuarkR5Controller:
         self._av_transport: Any = None
         self._connection_manager: Any = None
         self._rendering_control: Any = None
+        self._fsapi = RuarkFsApiClient(pin=settings.ruark_pin)
 
     @property
     def av_transport(self) -> Any:
@@ -110,6 +105,8 @@ class RuarkR5Controller:
             return
 
         self.ip = self.get_device_ip()
+        if self.ip:
+            self._fsapi.bind(self.ip)
         self.services = {
             service.service_type: service for service in self.device.services
         }
@@ -362,39 +359,13 @@ class RuarkR5Controller:
         )
         logger.info(f"🎛 Выбран пресет: {preset_name}")
 
-    def _require_ip(self) -> str:
-        """Возвращает IP устройства или бросает ошибку, если оно не найдено.
-
-        Raises:
-            RuarkDeviceNotFoundError: Если устройство ещё не найдено в сети.
-        """
-        if self.ip is None:
-            raise RuarkDeviceNotFoundError(
-                f"Устройство '{self.device_name}' не найдено в сети — "
-                f"IP неизвестен, вызовите connect()"
-            )
-        return self.ip
-
     async def get_session_id(self) -> str:
-        """Получение session_id.
+        """Получение session_id через fsapi.
 
         Raises:
             RuarkApiError: Если ответ fsapi не содержит sessionId.
         """
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"http://{self._require_ip()}/fsapi/CREATE_SESSION/"
-                f"?pin={settings.ruark_pin}"
-            ) as response:
-                content = await response.text()
-
-        match = SESSION_ID_REGEX.search(content)
-        if not match:
-            raise RuarkApiError(
-                f"Ответ CREATE_SESSION без sessionId: {content[:200]}"
-            )
-        self._session_id = match.group(1)
-        return self._session_id
+        return await self._fsapi.create_session()
 
     async def get_power_status(self) -> str:
         """Получение статуса питания ('1' — включено, '0' — выключено).
@@ -402,56 +373,15 @@ class RuarkR5Controller:
         Raises:
             RuarkApiError: Если ответ fsapi не содержит статус питания.
         """
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"http://{self._require_ip()}/fsapi/GET/"
-                f"netRemote.sys.power?pin={settings.ruark_pin}"
-                f"&sid={self._session_id}"
-            ) as response:
-                content = await response.text()
-
-        match = POWER_STATUS_REGEX.search(content)
-        if not match:
-            raise RuarkApiError(
-                f"Ответ netRemote.sys.power без статуса: {content[:200]}"
-            )
-        status = match.group(1)
-        logger.info(f"🔌 Статус питания: {status}")
-        return status
-
-    async def _set_power(self, value: int) -> bool:
-        """Переключает питание и проверяет итоговый статус."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"http://{self._require_ip()}/fsapi/SET/"
-                    f"netRemote.sys.power?pin={settings.ruark_pin}"
-                    f"&sid={self._session_id}&value={value}"
-                ) as response:
-                    if response.status != 200:
-                        return False
-            return await self.get_power_status() == str(value)
-        except (
-            aiohttp.ClientError,
-            RuarkApiError,
-            RuarkDeviceNotFoundError,
-        ) as e:
-            logger.error(f"Ошибка при переключении питания: {e}")
-            return False
+        return await self._fsapi.get_power_status()
 
     async def turn_power_on(self) -> bool:
         """Включение питания."""
-        success = await self._set_power(1)
-        if success:
-            logger.info("🔌 Питание включено")
-        return success
+        return await self._fsapi.turn_power_on()
 
     async def turn_power_off(self) -> bool:
         """Выключение питания."""
-        success = await self._set_power(0)
-        if success:
-            logger.info("🔌 Питание выключено")
-        return success
+        return await self._fsapi.turn_power_off()
 
     def generate_metadata_with_fake_duration(self, uri: str) -> str:
         """Генерация DIDL-Lite метаданных с длительностью 999999 часов."""
