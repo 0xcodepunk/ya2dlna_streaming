@@ -13,7 +13,10 @@ from injector import inject
 
 from core.authorization.yandex_tokens import get_device_token
 from yandex_station.constants import SOCKET_RECONNECT_DELAY
-from yandex_station.exceptions import ClientNotRunningError
+from yandex_station.exceptions import (
+    ClientNotRunningError,
+    StationNotFoundError,
+)
 from yandex_station.mdns_device_finder import DeviceFinder
 
 logger = logging.getLogger(__name__)
@@ -44,13 +47,33 @@ class YandexStationClient:
         self._connected_at = None
         self.tasks = []  # Хранение фоновых задач
 
-        self.device_finder.find_devices()  # Поиск устройств Yandex в сети
-        self.device_id = self.device_finder.device["device_id"]
-        self.platform = self.device_finder.device["platform"]
-        self.uri = (
-            f"wss://{self.device_finder.device['host']}:"
-            f"{self.device_finder.device['port']}"
-        )
+        # Параметры станции заполняются в _ensure_device при запуске
+        self.device_id: str | None = None
+        self.platform: str | None = None
+        self.uri: str | None = None
+
+    async def _ensure_device(self) -> None:
+        """Находит станцию в сети, если она ещё не найдена.
+
+        Raises:
+            StationNotFoundError: Если станция не найдена за отведённое время.
+        """
+        if self.device_id:
+            return
+
+        logger.info("🔍 Поиск Яндекс Станции в сети...")
+        found = await asyncio.to_thread(self.device_finder.find_devices)
+        if not found:
+            raise StationNotFoundError(
+                "Яндекс Станция не найдена в сети "
+                "(mDNS-сервис _yandexio._tcp.local.)"
+            )
+
+        device = self.device_finder.device
+        self.device_id = device["device_id"]
+        self.platform = device["platform"]
+        self.uri = f"wss://{device['host']}:{device['port']}"
+        logger.info(f"✅ Станция найдена: {self.uri}")
 
     async def run_once(self):
         """Гарантированный однократный запуск WebSocket."""
@@ -58,6 +81,7 @@ class YandexStationClient:
             logger.warning("⚠️ WebSocket уже запущен")
             return
 
+        await self._ensure_device()
         logger.info("🚀 Запуск WebSocket-клиента в новой задаче")
         self._connect_task = asyncio.create_task(self.connect())
         self._check_duplicate_tasks()

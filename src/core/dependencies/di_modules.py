@@ -46,8 +46,10 @@ class YandexStationClientModule(Module):
 
     @singleton
     @provider
-    def provide_yandex_station_client(self) -> YandexStationClient:
-        return YandexStationClient(device_finder=DeviceFinder())
+    def provide_yandex_station_client(
+        self, device_finder: DeviceFinder
+    ) -> YandexStationClient:
+        return YandexStationClient(device_finder=device_finder)
 
 
 class YandexStationControlsModule(Module):

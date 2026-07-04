@@ -3,7 +3,6 @@ from logging import getLogger
 
 from fastapi import APIRouter, Request, Response
 
-from core.dependencies.main_di_container import MainDIContainer
 from dlna_stream_server.handlers.stream_handler import StreamHandler
 from dlna_stream_server.handlers.utils import ruark_r5_request_logger
 
@@ -12,16 +11,20 @@ logger = getLogger(__name__)
 
 router = APIRouter()
 
-di_container = MainDIContainer().get_container()
-
-stream_handler = di_container.get(StreamHandler)
-
 # Словарь для отслеживания активных задач
 _active_tasks = {}
 
 
+def _get_stream_handler(request: Request) -> StreamHandler:
+    """Возвращает StreamHandler, созданный в lifespan приложения."""
+    return request.app.state.stream_handler
+
+
 async def _handle_stream_task(
-    yandex_url: str, task_id: str, radio: bool = False
+    stream_handler: StreamHandler,
+    yandex_url: str,
+    task_id: str,
+    radio: bool = False,
 ):
     """Обработчик задачи потока с логированием ошибок."""
     try:
@@ -35,7 +38,7 @@ async def _handle_stream_task(
 
 
 @router.post("/set_stream")
-async def set_stream(yandex_url: str, radio: bool = False):
+async def set_stream(request: Request, yandex_url: str, radio: bool = False):
     """Принимает URL трека и запускает потоковую передачу на Ruark."""
     logger.info(f"📥 Запуск нового потока с {yandex_url}")
 
@@ -50,7 +53,11 @@ async def set_stream(yandex_url: str, radio: bool = False):
         _active_tasks.pop(old_task_id, None)
 
     # Запускаем новую задачу
-    task = asyncio.create_task(_handle_stream_task(yandex_url, task_id, radio))
+    task = asyncio.create_task(
+        _handle_stream_task(
+            _get_stream_handler(request), yandex_url, task_id, radio
+        )
+    )
     _active_tasks[task_id] = task
 
     return {
@@ -64,7 +71,7 @@ async def set_stream(yandex_url: str, radio: bool = False):
 async def serve_stream(request: Request, radio: bool = False):
     """Раздает потоковый аудиофайл через HTTP."""
     await ruark_r5_request_logger(request)
-    return await stream_handler.stream_audio(radio)
+    return await _get_stream_handler(request).stream_audio(radio)
 
 
 @router.head("/live_stream.mp3")
@@ -79,8 +86,8 @@ async def serve_head(radio: bool = False):
 
 
 @router.post("/stop_stream")
-async def stop_stream():
+async def stop_stream(request: Request):
     """Останавливает потоковую передачу на Ruark."""
     logger.info("🛑 Остановка потоковой передачи...")
-    await stream_handler.stop_ffmpeg()
+    await _get_stream_handler(request).stop_ffmpeg()
     return {"message": "Потоковая передача остановлена"}
