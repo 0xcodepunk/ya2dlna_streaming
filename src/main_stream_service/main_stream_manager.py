@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 from logging import getLogger
 
 import aiohttp
@@ -18,6 +19,19 @@ from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
 
 logger = getLogger(__name__)
+
+
+@dataclass
+class _CycleContext:
+    """Изменяемое состояние цикла стриминга между итерациями."""
+
+    last_track: Track
+    last_alice_state: str | None
+    last_track_progress: float = 0.0
+    stuck_track_count: int = 0
+    volume_set_count: int = 0
+    speak_count: int = 0
+    track_url: str | None = None
 
 
 class MainStreamManager:
@@ -103,21 +117,20 @@ class MainStreamManager:
             logger.info("📡 Поток streaming() стартовал")
             await self._prepare_devices()
 
-            last_alice_state = await self._station_controls.get_alice_state()
-            last_track = Track(
-                id="0",
-                type="",
-                artist="",
-                title="",
-                duration=0,
-                progress=0,
-                playing=False,
+            ctx = _CycleContext(
+                last_track=Track(
+                    id="0",
+                    type="",
+                    artist="",
+                    title="",
+                    duration=0,
+                    progress=0,
+                    playing=False,
+                ),
+                last_alice_state=(
+                    await self._station_controls.get_alice_state()
+                ),
             )
-            stuck_track_count = 0
-            last_track_progress = 0.0
-            volume_set_count = 0
-            speak_count = 0
-            track_url: str | None = None
 
             while self._stream_state_running:
                 track = await self._station_controls.get_current_track()
@@ -127,164 +140,20 @@ class MainStreamManager:
                     )
                     await asyncio.sleep(1.0)
                     continue
-                current_alice_state = (
-                    await self._station_controls.get_alice_state()
-                )
+                alice_state = await self._station_controls.get_alice_state()
 
-                if current_alice_state != last_alice_state:
-                    current_volume = await self._station_controls.get_volume()
-                    if (
-                        current_alice_state in ALICE_ACTIVE_STATES
-                        and volume_set_count < 1
-                    ):
-                        volume_set_count += 1
-                        speak_count += 1
+                await self._duck_ruark_on_alice_speech(alice_state, ctx)
 
-                        self._ruark_volume = (
-                            await self._ruark_controls.get_volume()
-                        )
-                        await self._ruark_controls.set_volume(
-                            RUARK_IDLE_VOLUME
-                        )
+                if alice_state == "IDLE":
+                    track = await self._handle_idle_cycle(track, ctx)
 
-                        if current_volume == 0:
-                            await self._station_controls.unmute()
-
-                if current_alice_state == "IDLE":
-                    if not track.playing:
-                        if last_track_progress == track.progress:
-                            await self._ruark_controls.stop()
-                        else:
-                            stuck_track_count += 1
-                            if stuck_track_count > 2:
-                                logger.warning(
-                                    "⚠️ Трек застрял, перезапускаем"
-                                )
-                                if not await self._recover_stuck_track(
-                                    track, last_track_progress
-                                ):
-                                    logger.warning(
-                                        "⚠️ Не удалось перезапустить трек "
-                                        "через stop/play"
-                                    )
-                                stuck_track_count = 0
-
-                    if (
-                        last_track_progress != track.progress
-                        and track.type == "FmRadio"
-                        and not await self._ruark_controls.is_playing()
-                    ):
-                        logger.info("🔁 Возобновляем воспроизведение радио")
-                        radio_url = (
-                            await self._station_controls.get_radio_url()
-                        )
-                        if radio_url:
-                            await self._send_track_to_stream_server(
-                                track_url=radio_url,
-                                radio=True,
-                            )
-                            await asyncio.sleep(1)
-                        else:
-                            logger.warning(
-                                "⚠️ Не удалось получить URL радиостанции"
-                            )
-
-                    if track.id == last_track.id:
-                        refreshed_track = (
-                            await self._station_controls.get_current_track()
-                        )
-                        if refreshed_track is not None:
-                            track = refreshed_track
-
-                    if last_track.id != track.id and track.playing:
-                        if track.type == "FmRadio":
-                            track_url = (
-                                await self._station_controls.get_radio_url()
-                            )
-                            logger.info(f"🎵 URL радиостанции: {track_url}")
-                        else:
-                            track_url = (
-                                await self._yandex_music_api.get_file_info(
-                                    track_id=track.id,
-                                    quality=settings.stream_quality,
-                                )
-                            )
-                        if track_url:
-                            await self._send_track_to_stream_server(
-                                track_url,
-                                radio=track.type == "FmRadio",
-                            )
-                            last_track = track
-                        else:
-                            logger.warning(
-                                f"⚠️ Не удалось получить URL для трека "
-                                f"{track.id}, повторим на следующей итерации"
-                            )
-
-                    if speak_count > 0 and track.playing:
-                        logger.info("🔁 Возвращаем громкость Ruark")
-                        await self._ruark_controls.set_volume(
-                            self._ruark_volume
-                        )
-
-                        for _ in range(30):
-                            if await self._ruark_controls.is_playing():
-                                logger.info("▶️ Ruark начал играть")
-                                await self._station_controls.fade_out_alice_volume()
-                                speak_count = 0
-                                break
-                            await asyncio.sleep(0.1)
-                        else:
-                            logger.warning(
-                                "⚠️ Ruark так и не начал играть, "
-                                "перезапуск трека на стрим сервере"
-                            )
-                            if track_url:
-                                await self._send_track_to_stream_server(
-                                    track_url,
-                                    radio=track.type == "FmRadio",
-                                )
-                            else:
-                                logger.warning(
-                                    "⚠️ Нет сохранённого URL трека "
-                                    "для перезапуска"
-                                )
-                            await self._station_controls.fade_out_alice_volume()
-                            speak_count = 0
-
-                    if speak_count > 0 and not track.playing:
-                        await self._ruark_controls.set_volume(
-                            self._ruark_volume
-                        )
-
-                    current_volume = await self._station_controls.get_volume()
-
-                    if (
-                        (
-                            current_volume is not None
-                            and current_volume > 0
-                            and track.duration - track.progress > 10
-                            and track.type != "FmRadio"
-                        )
-                        or (track.type == "FmRadio" and track.playing)
-                    ) and track.playing:
-                        await self._station_controls.fade_out_alice_volume()
-
-                    volume_set_count = 0
-
-                if (
-                    track.duration - track.progress < 1
-                    and current_alice_state == "IDLE"
-                    and track.playing
-                    and track.type != "FmRadio"
-                ):
-                    await self._station_controls.unmute()
+                await self._unmute_before_track_end(track, alice_state)
 
                 self._log_current_track(
-                    track, current_alice_state, last_alice_state
+                    track, alice_state, ctx.last_alice_state
                 )
-                last_track_progress = track.progress
-                last_alice_state = current_alice_state
+                ctx.last_track_progress = track.progress
+                ctx.last_alice_state = alice_state
                 logger.debug("💤 Цикл стриминга работает")
                 await asyncio.sleep(1.0)
 
@@ -293,6 +162,186 @@ class MainStreamManager:
         except Exception as e:
             logger.error(f"❌ Ошибка в стриминге: {e}")
             raise
+
+    async def _duck_ruark_on_alice_speech(
+        self, alice_state: str | None, ctx: "_CycleContext"
+    ) -> None:
+        """Приглушает Ruark, когда Алиса начинает говорить или слушать."""
+        if alice_state == ctx.last_alice_state:
+            return
+
+        current_volume = await self._station_controls.get_volume()
+        if alice_state in ALICE_ACTIVE_STATES and ctx.volume_set_count < 1:
+            ctx.volume_set_count += 1
+            ctx.speak_count += 1
+
+            self._ruark_volume = await self._ruark_controls.get_volume()
+            await self._ruark_controls.set_volume(RUARK_IDLE_VOLUME)
+
+            if current_volume == 0:
+                await self._station_controls.unmute()
+
+    async def _handle_idle_cycle(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> Track:
+        """Обрабатывает итерацию цикла, когда Алиса молчит (IDLE).
+
+        Returns:
+            Track: Актуальный трек (мог обновиться при повторном опросе).
+        """
+        await self._stop_or_recover_paused_track(track, ctx)
+        await self._resume_radio_if_silent(track, ctx)
+        track = await self._refresh_track_if_unchanged(track, ctx)
+        await self._switch_to_new_track(track, ctx)
+        await self._restore_ruark_after_speech(track, ctx)
+        await self._fade_alice_if_playing(track)
+        ctx.volume_set_count = 0
+        return track
+
+    async def _stop_or_recover_paused_track(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> None:
+        """Останавливает Ruark на паузе или перезапускает застрявший трек."""
+        if track.playing:
+            return
+
+        if ctx.last_track_progress == track.progress:
+            await self._ruark_controls.stop()
+            return
+
+        # Прогресс меняется при playing=False — трек застрял
+        ctx.stuck_track_count += 1
+        if ctx.stuck_track_count > 2:
+            logger.warning("⚠️ Трек застрял, перезапускаем")
+            if not await self._recover_stuck_track(
+                track, ctx.last_track_progress
+            ):
+                logger.warning(
+                    "⚠️ Не удалось перезапустить трек через stop/play"
+                )
+            ctx.stuck_track_count = 0
+
+    async def _resume_radio_if_silent(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> None:
+        """Возобновляет радио, если станция играет, а Ruark молчит."""
+        if not (
+            ctx.last_track_progress != track.progress
+            and track.type == "FmRadio"
+            and not await self._ruark_controls.is_playing()
+        ):
+            return
+
+        logger.info("🔁 Возобновляем воспроизведение радио")
+        radio_url = await self._station_controls.get_radio_url()
+        if radio_url:
+            await self._send_track_to_stream_server(
+                track_url=radio_url,
+                radio=True,
+            )
+            await asyncio.sleep(1)
+        else:
+            logger.warning("⚠️ Не удалось получить URL радиостанции")
+
+    async def _refresh_track_if_unchanged(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> Track:
+        """Повторно опрашивает станцию, если id трека не сменился."""
+        if track.id != ctx.last_track.id:
+            return track
+
+        refreshed_track = await self._station_controls.get_current_track()
+        return refreshed_track if refreshed_track is not None else track
+
+    async def _switch_to_new_track(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> None:
+        """Отправляет новый трек на стрим сервер при смене id."""
+        if not (ctx.last_track.id != track.id and track.playing):
+            return
+
+        if track.type == "FmRadio":
+            ctx.track_url = await self._station_controls.get_radio_url()
+            logger.info(f"🎵 URL радиостанции: {ctx.track_url}")
+        else:
+            ctx.track_url = await self._yandex_music_api.get_file_info(
+                track_id=track.id,
+                quality=settings.stream_quality,
+            )
+
+        if ctx.track_url:
+            await self._send_track_to_stream_server(
+                ctx.track_url,
+                radio=track.type == "FmRadio",
+            )
+            ctx.last_track = track
+        else:
+            logger.warning(
+                f"⚠️ Не удалось получить URL для трека "
+                f"{track.id}, повторим на следующей итерации"
+            )
+
+    async def _restore_ruark_after_speech(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> None:
+        """Возвращает громкость Ruark после речи Алисы."""
+        if ctx.speak_count > 0 and track.playing:
+            logger.info("🔁 Возвращаем громкость Ruark")
+            await self._ruark_controls.set_volume(self._ruark_volume)
+
+            for _ in range(30):
+                if await self._ruark_controls.is_playing():
+                    logger.info("▶️ Ruark начал играть")
+                    await self._station_controls.fade_out_alice_volume()
+                    ctx.speak_count = 0
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                logger.warning(
+                    "⚠️ Ruark так и не начал играть, "
+                    "перезапуск трека на стрим сервере"
+                )
+                if ctx.track_url:
+                    await self._send_track_to_stream_server(
+                        ctx.track_url,
+                        radio=track.type == "FmRadio",
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ Нет сохранённого URL трека для перезапуска"
+                    )
+                await self._station_controls.fade_out_alice_volume()
+                ctx.speak_count = 0
+
+        if ctx.speak_count > 0 and not track.playing:
+            await self._ruark_controls.set_volume(self._ruark_volume)
+
+    async def _fade_alice_if_playing(self, track: Track) -> None:
+        """Плавно глушит Алису, пока трек или радио играют на Ruark."""
+        current_volume = await self._station_controls.get_volume()
+
+        if (
+            (
+                current_volume is not None
+                and current_volume > 0
+                and track.duration - track.progress > 10
+                and track.type != "FmRadio"
+            )
+            or (track.type == "FmRadio" and track.playing)
+        ) and track.playing:
+            await self._station_controls.fade_out_alice_volume()
+
+    async def _unmute_before_track_end(
+        self, track: Track, alice_state: str | None
+    ) -> None:
+        """Возвращает громкость станции перед самым концом трека."""
+        if (
+            track.duration - track.progress < 1
+            and alice_state == "IDLE"
+            and track.playing
+            and track.type != "FmRadio"
+        ):
+            await self._station_controls.unmute()
 
     async def _wrap_streaming(self):
         """Следит за потоком стриминга и перезапускает его при падении."""
