@@ -309,10 +309,13 @@ class MainStreamManager:
             return
 
         ctx.track_url = track_url
+        # flush: Ruark обязан сбросить буфер, иначе новая позиция
+        # прозвучит только после доигрывания забуференного хвоста
         await self._send_track_to_stream_server(
             track_url,
             radio=False,
             start_position=track.progress,
+            flush=True,
         )
         logger.info(
             f"⏱ Ресинк выполнен за "
@@ -495,6 +498,7 @@ class MainStreamManager:
         track_url: str,
         radio: bool = False,
         start_position: float = 0.0,
+        flush: bool = False,
     ):
         """Отправляет ссылку на трек на стрим сервер.
 
@@ -502,6 +506,7 @@ class MainStreamManager:
             track_url (str): Прямая ссылка на источник потока.
             radio (bool): Режим радио.
             start_position (float): Позиция старта в секундах.
+            flush (bool): Принудительная привязка Ruark со сбросом буфера.
         """
         try:
             async with aiohttp.ClientSession() as session:
@@ -513,6 +518,7 @@ class MainStreamManager:
                         "yandex_url": track_url,
                         "radio": str(radio).lower(),
                         "start_position": f"{start_position:.1f}",
+                        "flush": str(flush).lower(),
                     },
                 ) as resp:
                     response = await resp.json()

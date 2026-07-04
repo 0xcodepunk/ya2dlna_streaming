@@ -220,6 +220,13 @@ async def test_track_repeat_resyncs_stream_from_start(fast_sleep):
     await drive_streaming(manager, until=resync_happened)
 
     assert resync_happened(), "ресинк не сработал"
+    resync_call = next(
+        call
+        for call in send.call_args_list
+        if call.kwargs.get("start_position") == pytest.approx(2.0)
+    )
+    # Ресинк обязан требовать сброс буфера Ruark
+    assert resync_call.kwargs["flush"] is True
 
 
 async def test_seek_forward_resyncs_stream_at_new_position(fast_sleep):

@@ -83,13 +83,19 @@ class StreamHandler:
             f"?radio={str(radio).lower()}"
         )
 
-    async def _reattach_ruark(self, radio: bool) -> None:
+    async def _reattach_ruark(self, radio: bool, force: bool = False) -> None:
         """Привязывает Ruark к локальному стриму, если он ещё не на нём.
 
         При подключённом клиенте того же формата привязка не нужна:
         байты продолжают течь по открытому HTTP-ответу без разрыва.
+        force заставляет привязать в любом случае — Ruark при этом
+        сбрасывает свой буфер (нужно для перемотки).
         """
-        if self._active_clients > 0 and self._client_radio == radio:
+        if (
+            not force
+            and self._active_clients > 0
+            and self._client_radio == radio
+        ):
             logger.info(
                 "🔗 Клиент уже на потоке — привязка Ruark не требуется"
             )
@@ -315,8 +321,16 @@ class StreamHandler:
         yandex_url: str,
         radio: bool = False,
         start_position: float = 0.0,
+        flush: bool = False,
     ) -> None:
-        """Запускает потоковую трансляцию и передает её на Ruark."""
+        """Запускает потоковую трансляцию и передает её на Ruark.
+
+        Args:
+            yandex_url (str): Прямая ссылка на источник потока.
+            radio (bool): Режим радио.
+            start_position (float): Позиция старта трека в секундах.
+            flush (bool): Принудительная привязка Ruark со сбросом буфера.
+        """
         logger.info(f"🎶 Начинаем потоковое воспроизведение {yandex_url}")
 
         # Сбрасываем счетчик попыток и флаги для нового потока
@@ -332,7 +346,7 @@ class StreamHandler:
             logger.info(f"📡 Поток доступен по URL: {track_url}")
 
             reattach_started = time.monotonic()
-            await self._reattach_ruark(radio)
+            await self._reattach_ruark(radio, force=flush)
 
             logger.info(
                 f"⏱ Запуск потока: FFmpeg {ffmpeg_seconds:.2f}с, "

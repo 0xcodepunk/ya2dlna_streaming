@@ -227,3 +227,22 @@ async def test_reattach_happens_when_format_changes():
 
     await agen.aclose()
     await handler.stop_ffmpeg()
+
+
+async def test_flush_forces_reattach_despite_connected_client():
+    handler, ruark = make_handler()
+    set_params(handler, ["sh", "-c", "printf AAAA; exec sleep 30"])
+
+    await handler.play_stream("http://example/one")
+    response = await handler.stream_audio()
+    agen = response.body_iterator
+    await read_chunk(agen)
+
+    # Перемотка: flush обязателен, чтобы Ruark сбросил буфер
+    await handler.play_stream(
+        "http://example/one", start_position=42.0, flush=True
+    )
+    assert ruark.set_av_transport_uri.call_count == 2
+
+    await agen.aclose()
+    await handler.stop_ffmpeg()
