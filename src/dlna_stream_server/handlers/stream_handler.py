@@ -20,6 +20,22 @@ from .ffmpeg_supervisor import FfmpegSupervisor
 logger = getLogger(__name__)
 
 
+def _insert_start_position(
+    params: Sequence[str], start_position: float
+) -> list[str]:
+    """Вставляет -ss перед -i, чтобы FFmpeg начал с заданной позиции."""
+    result = list(params)
+    if start_position <= 0:
+        return result
+    try:
+        input_index = result.index("-i")
+    except ValueError:
+        logger.warning("⚠️ В параметрах FFmpeg нет -i, позиция не применена")
+        return result
+    result[input_index:input_index] = ["-ss", f"{start_position:.1f}"]
+    return result
+
+
 class StreamHandler:
     """Класс для управления потоковой передачей и воспроизведением на Ruark."""
 
@@ -73,9 +89,18 @@ class StreamHandler:
         await self._ffmpeg.stop()
 
     async def start_ffmpeg_stream(
-        self, yandex_url: str, radio: bool = False
+        self,
+        yandex_url: str,
+        radio: bool = False,
+        start_position: float = 0.0,
     ) -> None:
-        """Готовит источник и запускает потоковую передачу через FFmpeg."""
+        """Готовит источник и запускает потоковую передачу через FFmpeg.
+
+        Args:
+            yandex_url (str): Прямая ссылка на источник потока.
+            radio (bool): Режим радио.
+            start_position (float): Позиция старта трека в секундах.
+        """
         # Очищаем папку от старых MP3 файлов перед запуском нового стрима
         if not radio and settings.stream_is_local_file:
             asyncio.create_task(self._cleanup_mp3_files())
@@ -91,8 +116,12 @@ class StreamHandler:
                 if settings.stream_is_local_file
                 else yandex_url
             )
-            params = self._get_ffmpeg_params(
-                codec="mp3", is_local_file=settings.stream_is_local_file
+            params = _insert_start_position(
+                self._get_ffmpeg_params(
+                    codec="mp3",
+                    is_local_file=settings.stream_is_local_file,
+                ),
+                start_position,
             )
 
         await self._ffmpeg.start(yandex_url, params, radio)
@@ -207,7 +236,12 @@ class StreamHandler:
 
         return StreamingResponse(generate(), media_type=media_type)
 
-    async def play_stream(self, yandex_url: str, radio: bool = False) -> None:
+    async def play_stream(
+        self,
+        yandex_url: str,
+        radio: bool = False,
+        start_position: float = 0.0,
+    ) -> None:
         """Запускает потоковую трансляцию и передает её на Ruark."""
         logger.info(f"🎶 Начинаем потоковое воспроизведение {yandex_url}")
 
@@ -216,7 +250,7 @@ class StreamHandler:
 
         try:
             # Запускаем потоковую передачу (быстро, без ожидания)
-            await self.start_ffmpeg_stream(yandex_url, radio)
+            await self.start_ffmpeg_stream(yandex_url, radio, start_position)
 
             track_url = self._local_stream_url(radio)
             logger.info(f"📡 Поток доступен по URL: {track_url}")

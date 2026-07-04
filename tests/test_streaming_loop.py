@@ -39,8 +39,12 @@ def make_track(**kwargs) -> Track:
     return Track(**defaults)
 
 
-def make_station_controls(track, alice_states=("IDLE",)):
-    """Фейк станции: alice_states выдаются по очереди, последний повторяется."""
+def make_station_controls(track=None, alice_states=("IDLE",), tracks=None):
+    """Фейк станции.
+
+    alice_states и tracks выдаются по очереди, последний элемент
+    повторяется бесконечно.
+    """
     controls = AsyncMock(spec=YandexStationControls)
     states = list(alice_states)
 
@@ -48,7 +52,17 @@ def make_station_controls(track, alice_states=("IDLE",)):
         return states.pop(0) if len(states) > 1 else states[0]
 
     controls.get_alice_state.side_effect = next_state
-    controls.get_current_track.return_value = track
+
+    if tracks is not None:
+        queue = list(tracks)
+
+        async def next_track():
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+
+        controls.get_current_track.side_effect = next_track
+    else:
+        controls.get_current_track.return_value = track
+
     controls.get_volume.return_value = 0.5
     controls.get_radio_url.return_value = "http://radio/master.m3u8"
     return controls
@@ -171,3 +185,91 @@ async def test_missing_track_data_keeps_loop_alive(fast_sleep):
 
     manager._send_track_to_stream_server.assert_not_called()
     manager._ruark_controls.stop.assert_not_called()
+
+
+async def test_track_repeat_resyncs_stream_from_start(fast_sleep):
+    # Повтор трека: id не меняется, прогресс скачет к началу
+    tracks = [make_track(progress=100.0)] * 4 + [make_track(progress=2.0)]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(
+        manager,
+        until=lambda: any(
+            call.kwargs.get("start_position") is not None
+            for call in send.call_args_list
+        ),
+    )
+
+    resync_calls = [
+        call
+        for call in send.call_args_list
+        if call.kwargs.get("start_position") is not None
+    ]
+    assert resync_calls, "ресинк не сработал"
+    assert resync_calls[0].kwargs["start_position"] == pytest.approx(2.0)
+
+
+async def test_seek_forward_resyncs_stream_at_new_position(fast_sleep):
+    tracks = [make_track(progress=10.0)] * 4 + [make_track(progress=120.0)]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(
+        manager,
+        until=lambda: any(
+            call.kwargs.get("start_position") is not None
+            for call in send.call_args_list
+        ),
+    )
+
+    resync_calls = [
+        call
+        for call in send.call_args_list
+        if call.kwargs.get("start_position") is not None
+    ]
+    assert resync_calls[0].kwargs["start_position"] == pytest.approx(120.0)
+
+
+async def test_resume_after_pause_resyncs_stream(fast_sleep):
+    tracks = (
+        [make_track(progress=50.0)] * 4
+        + [make_track(progress=50.0, playing=False)] * 6
+        + [make_track(progress=51.0)]
+    )
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(
+        manager,
+        until=lambda: any(
+            call.kwargs.get("start_position") is not None
+            for call in send.call_args_list
+        ),
+    )
+
+    resync_calls = [
+        call
+        for call in send.call_args_list
+        if call.kwargs.get("start_position") is not None
+    ]
+    assert resync_calls[0].kwargs["start_position"] == pytest.approx(51.0)
+
+
+async def test_normal_playback_does_not_trigger_resync(fast_sleep):
+    tracks = [make_track(progress=float(p)) for p in range(10, 40)]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.2)
+
+    # Только первоначальная отправка трека, без ресинков
+    assert send.call_count == 1
+    assert all(
+        call.kwargs.get("start_position") is None
+        for call in send.call_args_list
+    )
