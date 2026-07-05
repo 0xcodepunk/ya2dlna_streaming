@@ -12,3 +12,6 @@ class Track:
     duration: float
     progress: float
     playing: bool
+    # Соседние треки очереди станции (entityInfo) — для предзагрузки
+    next_id: str | None = None
+    prev_id: str | None = None

@@ -128,6 +128,7 @@ class YandexStationControls:
             player_state = await self.get_player_status()
             if not player_state:
                 return None
+            entity = player_state.get("entityInfo") or {}
             return Track(
                 id=str(player_state.get("id", "0")),
                 title=str(player_state.get("title", "")),
@@ -136,10 +137,30 @@ class YandexStationControls:
                 duration=float(player_state.get("duration") or 0),
                 progress=float(player_state.get("progress") or 0),
                 playing=bool(player_state.get("playing", False)),
+                next_id=self._neighbor_track_id(entity, "next"),
+                prev_id=self._neighbor_track_id(entity, "prev"),
             )
         except Exception as e:
             logger.error(f"❌ Ошибка при получении текущего трека: {e}")
             return None
+
+    @staticmethod
+    def _neighbor_track_id(entity: Any, key: str) -> str | None:
+        """Извлекает id соседнего трека из entityInfo станции.
+
+        Args:
+            entity (Any): Словарь entityInfo из playerState.
+            key (str): Ключ соседа: next или prev.
+        Returns:
+            str | None: Идентификатор, если сосед — трек.
+        """
+        if not isinstance(entity, dict):
+            return None
+        neighbor = entity.get(key)
+        if not isinstance(neighbor, dict) or neighbor.get("type") != "Track":
+            return None
+        neighbor_id = neighbor.get("id")
+        return str(neighbor_id) if neighbor_id else None
 
     async def get_volume(self) -> float | None:
         """Получение текущего уровня громкости (0.0–1.0)."""

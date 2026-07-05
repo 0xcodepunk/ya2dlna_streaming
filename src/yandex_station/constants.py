@@ -20,3 +20,8 @@ PROGRESS_JUMP_THRESHOLD = 5.0
 # после отправки потока, прежде чем считать тишину проблемой, секунды
 SILENCE_CHECK_INTERVAL = 3.0
 SILENCE_RESEND_GRACE = 15.0
+
+# Кеш прямых ссылок на треки: время жизни записи (CDN-ссылки
+# протухают) и максимум записей, секунды / штуки
+TRACK_SOURCE_TTL = 600.0
+TRACK_SOURCE_CACHE_SIZE = 8
