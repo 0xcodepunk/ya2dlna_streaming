@@ -538,6 +538,84 @@ async def test_start_stops_ws_client_when_ruark_not_found():
     station.stop_ws_client.assert_called_once()
 
 
+async def test_start_announces_missing_ruark_by_voice():
+    """Ruark не найден — станция голосом объясняет причину."""
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.connect.return_value = False
+    ruark.device_name = "Ruark R5"
+    manager = make_manager(station, ruark)
+
+    await manager.start()
+
+    station.say.assert_awaited_once()
+    phrase = station.say.call_args.args[0]
+    assert "Руарк" in phrase
+
+
+async def test_start_stays_silent_when_station_unreachable():
+    """Недоступна сама станция — озвучивать ошибку нечем."""
+    station = make_station_controls(make_track())
+    station.start_ws_client.side_effect = RuntimeError("станция не найдена")
+    manager = make_manager(station, make_ruark())
+
+    await manager.start()
+
+    assert manager._stream_state_running is False
+    station.say.assert_not_called()
+
+
+async def test_repeated_crashes_announce_error_once(fast_sleep, monkeypatch):
+    """Серия падений цикла — одно голосовое уведомление, без спама."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.STREAMING_RESTART_DELAY",
+        0.0,
+    )
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+    manager.streaming = AsyncMock(side_effect=RuntimeError("бум"))
+    manager._stream_state_running = True
+
+    task = asyncio.create_task(manager._wrap_streaming())
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not station.say.called:
+        await REAL_SLEEP(0.005)
+    # Даём циклу упасть ещё несколько раз после объявления
+    await REAL_SLEEP(0.05)
+    manager._stream_state_running = False
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    station.say.assert_awaited_once_with(
+        "Стрим сломался и сам не восстанавливается, загляни в логи"
+    )
+    station.unmute.assert_called()
+
+
+async def test_short_failure_streak_stays_silent(fast_sleep, monkeypatch):
+    """Пара падений с восстановлением — голосовое уведомление не нужно."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.STREAMING_RESTART_DELAY",
+        0.0,
+    )
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+    calls = {"count": 0}
+
+    async def flaky_streaming():
+        calls["count"] += 1
+        if calls["count"] <= 2:
+            raise RuntimeError("бум")
+        manager._stream_state_running = False
+
+    manager.streaming = flaky_streaming
+    manager._stream_state_running = True
+
+    await manager._wrap_streaming()
+
+    station.say.assert_not_called()
+
+
 async def test_stop_survives_unreachable_ruark():
     """Недоступный Ruark не прерывает остановку стриминга."""
     station = make_station_controls(make_track())

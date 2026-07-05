@@ -25,3 +25,12 @@ SILENCE_RESEND_GRACE = 15.0
 # протухают) и максимум записей, секунды / штуки
 TRACK_SOURCE_TTL = 600.0
 TRACK_SOURCE_CACHE_SIZE = 8
+
+# Локальный TTS: sendText с этим префиксом заставляет Алису
+# произнести фразу вслух
+TTS_REPEAT_PREFIX = "Повтори за мной"
+
+# Голосовые уведомления об ошибках: сколько падений цикла подряд
+# терпеть до объявления и пауза, сбрасывающая счётчик, секунды
+STREAMING_FAILURE_ANNOUNCE_AFTER = 3
+STREAMING_FAILURE_STREAK_RESET = 60.0
