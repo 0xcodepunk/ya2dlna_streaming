@@ -515,7 +515,8 @@ class MainStreamManager:
             artist (str): Исполнитель для дисплея Ruark.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 logger.info(f"🎵 Отправляем трек на стрим сервер: {track_url}")
                 async with session.post(
                     f"http://{self._stream_server_url}:"
@@ -540,7 +541,8 @@ class MainStreamManager:
 
     async def _stop_stream_on_stream_server(self):
         """Останавливает стрим на стрим сервере."""
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 f"http://{self._stream_server_url}:"
                 f"{settings.local_server_port_dlna}/stop_stream"

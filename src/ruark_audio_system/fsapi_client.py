@@ -42,7 +42,8 @@ class RuarkFsApiClient:
     async def _get(self, path: str) -> str:
         """Выполняет GET-запрос к fsapi и возвращает тело ответа."""
         url = f"http://{self._require_ip()}{path}"
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
                 response.raise_for_status()
                 return await response.text()

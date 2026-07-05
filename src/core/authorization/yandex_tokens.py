@@ -27,7 +27,8 @@ async def get_device_token(device_id: str, platform: str) -> str:
         "Content-Type": "application/json",
     }
 
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(
             url, headers=headers, params=params
         ) as response:
