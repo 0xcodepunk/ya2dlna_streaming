@@ -17,7 +17,8 @@ from yandex_station.exceptions import (
     ClientNotRunningError,
     StationNotFoundError,
 )
-from yandex_station.mdns_device_finder import DeviceFinder
+from yandex_station.mdns_device_finder import DeviceFinder, StationDevice
+from yandex_station.station_store import StationDeviceStore
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class YandexStationClient:
         self.state_updated = asyncio.Event()
         self._connect_task: asyncio.Task[None] | None = None
         self._connected_at: float | None = None
+        self._device_store = StationDeviceStore()
         # Хранение фоновых задач
         self.tasks: list[asyncio.Task[None]] = []
 
@@ -75,10 +77,21 @@ class YandexStationClient:
     async def _ensure_device(self) -> None:
         """Находит станцию в сети, если она ещё не найдена.
 
+        Сначала проверяется кеш прошлого запуска (быстрая TCP-проверка
+        адреса), при неудаче — mDNS-поиск с сохранением результата.
+
         Raises:
             StationNotFoundError: Если станция не найдена за отведённое время.
         """
         if self.device_id:
+            return
+
+        cached = self._device_store.load()
+        if cached and await self._is_station_reachable(
+            cached["host"], cached["port"]
+        ):
+            self._apply_device(cached)
+            logger.info(f"⚡ Станция взята из кеша: {self.uri}")
             return
 
         logger.info("🔍 Поиск Яндекс Станции в сети...")
@@ -90,10 +103,29 @@ class YandexStationClient:
                 "(mDNS-сервис _yandexio._tcp.local.)"
             )
 
+        self._device_store.save(device)
+        self._apply_device(device)
+        logger.info(f"✅ Станция найдена: {self.uri}")
+
+    def _apply_device(self, device: StationDevice) -> None:
+        """Заполняет параметры подключения из найденной станции."""
         self.device_id = device["device_id"]
         self.platform = device["platform"]
         self.uri = f"wss://{device['host']}:{device['port']}"
-        logger.info(f"✅ Станция найдена: {self.uri}")
+
+    @staticmethod
+    async def _is_station_reachable(
+        host: str, port: int, timeout: float = 1.5
+    ) -> bool:
+        """Быстрая TCP-проверка, что станция отвечает по адресу из кеша."""
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout
+            )
+            writer.close()
+            return True
+        except (OSError, asyncio.TimeoutError):
+            return False
 
     async def run_once(self):
         """Гарантированный однократный запуск WebSocket."""

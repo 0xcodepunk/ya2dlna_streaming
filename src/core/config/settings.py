@@ -33,6 +33,8 @@ class Settings(BaseSettings):
 
     # Ruark R5 settings
     ruark_pin: str
+    # Известный IP Ruark: быстрый старт без SSDP-скана всей сети
+    ruark_host: str | None = None
 
     # Mode settings
     debug: bool = False

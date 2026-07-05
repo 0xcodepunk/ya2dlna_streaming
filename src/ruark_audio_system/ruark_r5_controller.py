@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import urllib.parse
 from logging import getLogger
 from typing import Any, Dict, List, Literal, Optional
@@ -11,6 +12,8 @@ from core.config.settings import settings
 from ruark_audio_system.constants import DEFAULT_STREAM_TITLE, META_INFO
 from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.fsapi_client import RuarkFsApiClient
+from ruark_audio_system.location_store import RuarkLocationStore
+from ruark_audio_system.ssdp import ssdp_locate
 
 logger = getLogger(__name__)
 
@@ -40,6 +43,7 @@ class RuarkR5Controller:
         self._connection_manager: Any = None
         self._rendering_control: Any = None
         self._fsapi = RuarkFsApiClient(pin=settings.ruark_pin)
+        self._location_store = RuarkLocationStore()
 
     @property
     def av_transport(self) -> Any:
@@ -102,9 +106,15 @@ class RuarkR5Controller:
         return False
 
     def refresh_device(self) -> None:
-        """Обновление устройства."""
+        """Обновление устройства.
+
+        Сначала быстрый путь по известному адресу (настройка или кеш
+        прошлого запуска), при неудаче — полный SSDP-скан сети.
+        """
         logger.info("🔄 Обновление устройства")
-        self.device = self.find_device(device_name=self.device_name)
+        self.device = self._device_from_known_address()
+        if not self.device:
+            self.device = self.find_device(device_name=self.device_name)
         if not self.device:
             logger.warning(
                 f"⚠ Устройство '{self.device_name}' не найдено в сети!"
@@ -126,10 +136,69 @@ class RuarkR5Controller:
         self._rendering_control = self.services.get(
             "urn:schemas-upnp-org:service:RenderingControl:1"
         )
+        self._location_store.save(self.device.location)
         logger.info(
             f"Устройство обновлено: {self.device.friendly_name} "
             f"({self.device.location})"
         )
+
+    def _device_from_known_address(self) -> Optional[upnpclient.Device]:
+        """Подключение по известному адресу без сканирования сети.
+
+        Приоритет: IP из настроек (APP_RUARK_HOST), затем location
+        прошлого успешного поиска. Любая неудача — фолбэк на скан.
+        """
+        candidates: list[str] = []
+        if settings.ruark_host:
+            location = ssdp_locate(settings.ruark_host)
+            if location:
+                candidates.append(location)
+        cached = self._location_store.load()
+        if cached and cached not in candidates:
+            candidates.append(cached)
+
+        for location in candidates:
+            device = self._device_at_location(location)
+            if device:
+                return device
+        return None
+
+    def _device_at_location(
+        self, location: str
+    ) -> Optional[upnpclient.Device]:
+        """Проверяет, что по location отвечает именно нужное устройство."""
+        try:
+            if not self._is_location_reachable(location):
+                return None
+            device = upnpclient.Device(location)
+            if self.device_name in device.friendly_name:
+                logger.info(
+                    f"⚡ Ruark найден по известному адресу: {location}"
+                )
+                return device
+            logger.info(
+                f"ℹ️ По адресу {location} другое устройство: "
+                f"{device.friendly_name}"
+            )
+        except Exception as e:
+            logger.info(
+                f"ℹ️ Быстрое подключение по {location} не удалось: {e}"
+            )
+        return None
+
+    @staticmethod
+    def _is_location_reachable(location: str, timeout: float = 2.0) -> bool:
+        """Быстрая TCP-проверка адреса перед HTTP-запросом описания."""
+        parsed = urllib.parse.urlparse(location)
+        if not parsed.hostname or not parsed.port:
+            return False
+        try:
+            with socket.create_connection(
+                (parsed.hostname, parsed.port), timeout=timeout
+            ):
+                return True
+        except OSError:
+            return False
 
     def find_device(self, device_name: str) -> Optional[upnpclient.Device]:
         """Находит устройство по имени."""

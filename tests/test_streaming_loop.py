@@ -523,6 +523,21 @@ async def test_cached_source_expires_after_ttl():
     assert "42" not in manager._source_cache
 
 
+async def test_start_stops_ws_client_when_ruark_not_found():
+    """Ruark не найден при параллельном старте — WebSocket гасится."""
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.connect.return_value = False
+    ruark.device_name = "Ruark R5"
+    manager = make_manager(station, ruark)
+
+    await manager.start()
+
+    assert manager._stream_state_running is False
+    station.start_ws_client.assert_called_once()
+    station.stop_ws_client.assert_called_once()
+
+
 async def test_stop_survives_unreachable_ruark():
     """Недоступный Ruark не прерывает остановку стриминга."""
     station = make_station_controls(make_track())
