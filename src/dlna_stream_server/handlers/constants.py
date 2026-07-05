@@ -121,9 +121,18 @@ FFMPEG_FLAC_PARAMS = [
     "pipe:1",
 ]
 
-# MIME-типы потоков по кодеку
+# MIME-типы потоков по кодеку (Content-Type HTTP-ответа)
 STREAM_MIME_TYPES = {
     "mp3": "audio/mpeg",
     "flac": "audio/flac",
     "aac": "audio/aac",
+}
+
+# MIME-типы для protocolInfo в DIDL-метаданных привязки Ruark.
+# Ресурс, объявленный как audio/aac, Ruark качает, но не воспроизводит —
+# ADTS-поток радио играет только под вывеской audio/mpeg
+DIDL_MIME_TYPES = {
+    "mp3": "audio/mpeg",
+    "flac": "audio/flac",
+    "aac": "audio/mpeg",
 }
