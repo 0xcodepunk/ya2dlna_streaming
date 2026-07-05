@@ -373,3 +373,47 @@ async def test_playing_ruark_does_not_trigger_resend(fast_sleep, monkeypatch):
 
     # Только первоначальный свитч, страховка молчит
     assert send.call_count == 1
+
+
+async def test_powered_off_ruark_stops_streaming(fast_sleep, monkeypatch):
+    """Ruark выключен пользователем — стриминг останавливается сам."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_CHECK_INTERVAL", 0.0
+    )
+    track = make_track(progress=50.0)
+    station = make_station_controls(track)
+    ruark = make_ruark(is_playing=False)
+    ruark.get_power_status.return_value = "0"
+    manager = make_manager(station, ruark)
+    manager._stop_stream_on_stream_server = AsyncMock()
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(
+        manager, until=lambda: not manager._stream_state_running
+    )
+
+    assert manager._stream_state_running is False
+    # Поток не пересылался выключенному устройству
+    assert send.call_count == 1  # только первоначальный свитч
+    station.unmute.assert_called()
+
+
+async def test_stop_survives_unreachable_ruark():
+    """Недоступный Ruark не прерывает остановку стриминга."""
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.stop.side_effect = RuntimeError("нет связи")
+    ruark.set_volume.side_effect = RuntimeError("нет связи")
+    ruark.turn_power_off.side_effect = RuntimeError("нет связи")
+    manager = make_manager(station, ruark)
+    manager._stop_stream_on_stream_server = AsyncMock()
+    manager._volume_store = MagicMock()
+
+    await manager.stop()
+
+    # Главные шаги дошли до конца, несмотря на мёртвый Ruark
+    station.unmute.assert_called()
+    station.stop_ws_client.assert_called()
