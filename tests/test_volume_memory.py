@@ -30,8 +30,10 @@ def make_manager(ruark_volume=20):
     ruark.get_power_status.return_value = "1"
     ruark.get_session_id.return_value = "sid"
     station = AsyncMock(spec=YandexStationControls)
+    ws_client = MagicMock()
+    ws_client.wait_for_state_update = AsyncMock(return_value=True)
     manager = MainStreamManager(
-        station_ws_client=MagicMock(),
+        station_ws_client=ws_client,
         station_controls=station,
         ruark_controls=ruark,
         yandex_music_api=AsyncMock(spec=YandexMusicAPI),

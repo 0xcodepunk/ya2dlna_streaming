@@ -21,5 +21,8 @@ def mock_finder():
 
 @pytest.fixture
 def mock_station_client(mock_finder):
-    """Клиент станции с замоканным DeviceFinder."""
-    return YandexStationClient(device_finder=mock_finder)
+    """Клиент станции с замоканным DeviceFinder и пустым кешем."""
+    client = YandexStationClient(device_finder=mock_finder)
+    client._device_store = MagicMock()
+    client._device_store.load.return_value = None
+    return client

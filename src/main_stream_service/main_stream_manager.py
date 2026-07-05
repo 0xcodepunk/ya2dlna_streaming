@@ -93,18 +93,28 @@ class MainStreamManager:
             return
 
         logger.info("🎵 Запуск стриминга")
+        # Поиск Ruark и подключение к станции идут параллельно —
+        # это заметно ускоряет старт стрима
+        results: tuple[Any, Any] = await asyncio.gather(
+            self._ruark_controls.connect(),
+            self._station_controls.start_ws_client(),
+            return_exceptions=True,
+        )
+        ruark_connected, ws_result = results
         try:
-            # Поиск устройств выполняется здесь, а не при старте процесса
-            if not await self._ruark_controls.connect():
+            if isinstance(ws_result, BaseException):
+                raise ws_result
+            if isinstance(ruark_connected, BaseException):
+                raise ruark_connected
+            if not ruark_connected:
                 raise RuarkDeviceNotFoundError(
                     f"Устройство "
                     f"'{self._ruark_controls.device_name}' "
                     f"не найдено в сети"
                 )
-            logger.info("🔄 Запуск WebSocket клиента")
-            await self._station_controls.start_ws_client()
         except Exception as e:
             logger.error(f"❌ Не удалось запустить стриминг: {e}")
+            await self._station_controls.stop_ws_client()
             return
 
         self._stream_state_running = True
@@ -652,7 +662,9 @@ class MainStreamManager:
 
     async def _prepare_devices(self):
         logger.info("🔧 Подготовка устройств к стримингу...")
-        await asyncio.sleep(1)
+        # Ждём первое сообщение станции вместо фиксированной паузы:
+        # обычно оно приходит сразу после подключения WebSocket
+        await self._ws_client.wait_for_state_update(1.0)
         await self._station_controls.set_default_volume()
         await self._ruark_controls.get_session_id()
         if await self._ruark_controls.get_power_status() == "0":

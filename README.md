@@ -91,6 +91,9 @@ APP_YA_MUSIC_TOKEN=your_token_here
 # PIN-код Ruark (по умолчанию 1234)
 APP_RUARK_PIN=1234
 
+# Необязательно: известный IP Ruark — быстрый старт без SSDP-скана сети
+# APP_RUARK_HOST=192.168.1.20
+
 # Адрес и порты сервисов (адрес — IP машины в локальной сети)
 APP_LOCAL_SERVER_HOST=192.168.1.10
 APP_LOCAL_SERVER_PORT_DLNA=8080
