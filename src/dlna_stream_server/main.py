@@ -13,7 +13,7 @@ from dlna_stream_server.endpoints.routers import main_router
 from dlna_stream_server.handlers.stream_handler import StreamHandler
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
-setup_logging()
+setup_logging("dlna")
 
 logger = getLogger(__name__)
 

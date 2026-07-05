@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 from xml.sax.saxutils import escape
 
 import upnpclient
+import upnpclient.soap
 
 from core.config.settings import settings
 from ruark_audio_system.constants import DEFAULT_STREAM_TITLE, META_INFO
@@ -12,6 +13,11 @@ from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.fsapi_client import RuarkFsApiClient
 
 logger = getLogger(__name__)
+
+# Технический шов: upnpclient не параметризует таймаут SOAP-вызовов.
+# Штатные 30 секунд на подвисшем устройстве замораживают цикл стриминга
+# на минуты (несколько вызовов подряд) — ужимаем до 10 секунд.
+upnpclient.soap.SOAP_TIMEOUT = 10
 
 PlayModeType = Literal["NORMAL", "SHUFFLE", "REPEAT_ALL"]
 SeekUnitType = Literal["REL_TIME", "ABS_TIME", "ABS_COUNT", "TRACK_NR"]

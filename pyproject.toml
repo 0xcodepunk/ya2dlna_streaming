@@ -55,5 +55,5 @@ check_untyped_defs = true
 disallow_any_generics = true
 
 [[tool.mypy.overrides]]
-module = ["upnpclient", "yandex_music"]
+module = ["upnpclient", "upnpclient.*", "yandex_music"]
 ignore_missing_imports = true

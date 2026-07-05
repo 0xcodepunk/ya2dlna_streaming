@@ -15,6 +15,8 @@ from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     PROGRESS_JUMP_THRESHOLD,
     RUARK_IDLE_VOLUME,
+    SILENCE_CHECK_INTERVAL,
+    SILENCE_RESEND_GRACE,
     STREAM_POLL_INTERVAL,
     STREAMING_RESTART_DELAY,
 )
@@ -40,6 +42,10 @@ class _CycleContext:
     speak_count: int = 0
     track_url: str | None = None
     last_log_signature: tuple[str, bool, str | None] | None = None
+    # Момент последней отправки потока (time.monotonic)
+    last_stream_sent_at: float = 0.0
+    last_silence_check_at: float = 0.0
+    silent_checks: int = 0
 
 
 class MainStreamManager:
@@ -210,6 +216,7 @@ class MainStreamManager:
         await self._resync_after_progress_jump(track, ctx)
         await self._switch_to_new_track(track, ctx)
         await self._restore_ruark_after_speech(track, ctx)
+        await self._resume_track_if_silent(track, ctx)
         await self._fade_alice_if_playing(track)
         ctx.volume_set_count = 0
         return track
@@ -296,9 +303,47 @@ class MainStreamManager:
             return
 
         reason = "продолжение после паузы" if resumed else "разрыв прогресса"
+        await self._resend_current_track(track, ctx, reason)
+
+    async def _resume_track_if_silent(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> None:
+        """Страховка: станция играет трек, а Ruark молчит — переслать поток.
+
+        Закрывает любые «тихие» отказы: самоостановку FFmpeg, обрывы
+        соединения, уход Ruark вперёд трека. Проверка Ruark по UPnP
+        дорогая, поэтому выполняется не чаще SILENCE_CHECK_INTERVAL
+        и требует двух подтверждений тишины подряд.
+        """
+        if track.type == "FmRadio" or not track.playing or ctx.speak_count:
+            ctx.silent_checks = 0
+            return
+
+        now = time.monotonic()
+        if now - ctx.last_stream_sent_at < SILENCE_RESEND_GRACE:
+            return
+        if now - ctx.last_silence_check_at < SILENCE_CHECK_INTERVAL:
+            return
+        ctx.last_silence_check_at = now
+
+        if await self._ruark_controls.is_playing():
+            ctx.silent_checks = 0
+            return
+
+        ctx.silent_checks += 1
+        if ctx.silent_checks < 2:
+            return
+
+        ctx.silent_checks = 0
+        logger.warning("⚠️ Станция играет, а Ruark молчит — пересылаем поток")
+        await self._resend_current_track(track, ctx, "страховка от тишины")
+
+    async def _resend_current_track(
+        self, track: Track, ctx: "_CycleContext", reason: str
+    ) -> None:
+        """Перезапускает поток текущего трека с позиции станции."""
         logger.info(
-            f"🔁 Ресинк стрима ({reason}): ожидали "
-            f"~{expected_progress:.0f}s, станция на {track.progress:.0f}s"
+            f"🔁 Ресинк стрима ({reason}): позиция {track.progress:.0f}s"
         )
         resync_started = time.monotonic()
         track_url = await self._yandex_music_api.get_file_info(
@@ -310,6 +355,8 @@ class MainStreamManager:
             return
 
         ctx.track_url = track_url
+        ctx.last_track = track
+        ctx.last_stream_sent_at = time.monotonic()
         await self._send_track_to_stream_server(
             track_url,
             radio=False,
@@ -356,6 +403,7 @@ class MainStreamManager:
                     f"с {start_position:.0f}s"
                 )
             send_started = time.monotonic()
+            ctx.last_stream_sent_at = send_started
             await self._send_track_to_stream_server(
                 ctx.track_url,
                 radio=track.type == "FmRadio",
@@ -515,7 +563,8 @@ class MainStreamManager:
             artist (str): Исполнитель для дисплея Ruark.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 logger.info(f"🎵 Отправляем трек на стрим сервер: {track_url}")
                 async with session.post(
                     f"http://{self._stream_server_url}:"
@@ -540,7 +589,8 @@ class MainStreamManager:
 
     async def _stop_stream_on_stream_server(self):
         """Останавливает стрим на стрим сервере."""
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 f"http://{self._stream_server_url}:"
                 f"{settings.local_server_port_dlna}/stop_stream"
