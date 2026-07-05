@@ -27,30 +27,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Установка Python
-        uses: actions/setup-python@v5
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
+          enable-cache: true
 
       - name: Установка зависимостей
-        run: pip install -r requirements-dev.txt
+        run: uv sync --frozen
 
       - name: Проверка форматирования (black)
-        run: black --check src tests
+        run: uv run black --check src tests
 
       - name: Проверка импортов (isort)
-        run: isort --check-only src tests
+        run: uv run isort --check-only src tests
 
       - name: Линтер (flake8)
-        run: flake8 .
+        run: uv run flake8 .
 
       - name: Проверка типов (mypy)
-        run: mypy
+        run: uv run mypy
 
       - name: Тесты (pytest)
-        run: pytest -q
+        run: uv run pytest -q
 
   deploy:
     name: Деплой на Raspberry Pi

@@ -34,3 +34,5 @@ docker-compose.yml
 
 # TO DO folder
 todo/
+# Виртуальное окружение uv
+.venv/

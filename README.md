@@ -112,16 +112,16 @@ docker compose up -d
 
 ## ⚙️ CI/CD
 
-Каждый pull request проходит проверки на GitHub-hosted раннере: `black`, `isort`, `flake8`, `mypy` (strict-уровень) и `pytest`. Пуш в `main` дополнительно запускает деплой на self-hosted раннере: сборка образов, перезапуск `docker compose` и healthcheck обоих сервисов. Конфигурация — в [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
+Каждый pull request проходит проверки на GitHub-hosted раннере (`uv sync --frozen`): `black`, `isort`, `flake8`, `mypy` (strict-уровень) и `pytest`. Пуш в `main` дополнительно запускает деплой на self-hosted раннере: сборка образов, перезапуск `docker compose` и healthcheck обоих сервисов. Конфигурация — в [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
 
 ## 💻 Локальная разработка
 
 ### Установка зависимостей
+Проект использует [uv](https://docs.astral.sh/uv/):
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt
+uv sync
 ```
+Команда создаст `.venv` и установит все зависимости, включая инструменты разработки, строго по `uv.lock`.
 
 ### Запуск сервисов
 ```bash
@@ -134,11 +134,11 @@ python -m src.dlna_stream_server.main
 
 ### Проверки перед коммитом
 ```bash
-./.venv/bin/python -m black src tests
-./.venv/bin/python -m isort src tests
-./.venv/bin/python -m flake8 .
-./.venv/bin/python -m mypy
-./.venv/bin/python -m pytest
+uv run black src tests
+uv run isort src tests
+uv run flake8 .
+uv run mypy
+uv run pytest
 ```
 
 ## ⚡ Требования
