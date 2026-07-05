@@ -47,6 +47,9 @@ class StreamHandler:
         self._ffmpeg = FfmpegSupervisor(on_restarted=self._reattach_ruark)
         # Метаданные текущего потока для дисплея Ruark: (title, artist)
         self._now_playing: tuple[str, str] = (DEFAULT_STREAM_TITLE, "")
+        # Поколение клиента: новый слушатель вытесняет предыдущего,
+        # иначе два читателя одного pipe рвут поток на куски
+        self._client_epoch = 0
 
     async def execute_with_lock(
         self,
@@ -145,6 +148,10 @@ class StreamHandler:
             raise HTTPException(status_code=404, detail="Поток не запущен")
         stdout = proc.stdout
 
+        # Новый клиент вытесняет предыдущего: единственный читатель pipe
+        self._client_epoch += 1
+        client_epoch = self._client_epoch
+
         async def generate():
             try:
                 empty_count = 0
@@ -154,6 +161,13 @@ class StreamHandler:
                 serve_started = time.monotonic()
                 first_chunk_sent = False
                 while True:
+                    if self._client_epoch != client_epoch:
+                        logger.info(
+                            "⏹ Подключился новый клиент — закрываем "
+                            "старое соединение"
+                        )
+                        break
+
                     # Выход после полной передачи stdout
                     if stdout.at_eof():
                         logger.info(

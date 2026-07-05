@@ -166,3 +166,28 @@ async def test_play_stream_passes_metadata_to_ruark():
     assert call.kwargs["title"] == "Песня"
     assert call.kwargs["artist"] == "Артист"
     await handler.stop_ffmpeg()
+
+
+async def read_chunk(agen, timeout=3.0):
+    """Читает следующий чанк из генератора стрима с таймаутом."""
+    return await asyncio.wait_for(agen.__anext__(), timeout)
+
+
+async def test_new_client_displaces_previous_stream():
+    handler, _ = make_handler()
+    set_params(handler, ["sh", "-c", "while :; do printf A; sleep 0.05; done"])
+    await handler.start_ffmpeg_stream("http://example/one")
+
+    first = (await handler.stream_audio()).body_iterator
+    assert await read_chunk(first)
+
+    # Второй клиент (переподключение Ruark) забирает поток себе
+    second = (await handler.stream_audio()).body_iterator
+    assert await read_chunk(second)
+
+    # Первый закрывается и больше не ворует байты из pipe
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(first.__anext__(), timeout=3.0)
+
+    await second.aclose()
+    await handler.stop_ffmpeg()
