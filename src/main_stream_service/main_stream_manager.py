@@ -2,6 +2,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 from logging import getLogger
+from typing import Any, Awaitable, Callable
 
 import aiohttp
 from injector import inject
@@ -78,6 +79,8 @@ class MainStreamManager:
         self._volume_store = RuarkVolumeStore()
         self._stream_state_running = False
         self._tasks = []  # Хранение фоновых задач
+        # Ссылка на задачу авто-остановки (Ruark выключен пользователем)
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     async def start(self):
         """Запуск всех стриминговых процессов."""
@@ -107,14 +110,21 @@ class MainStreamManager:
         self._tasks.extend([stream_task])
 
     async def stop(self):
-        """Остановка всех стриминговых процессов."""
+        """Остановка всех стриминговых процессов.
+
+        Каждый шаг с устройствами выполняется независимо: недоступный
+        Ruark (например, выключен пользователем) не должен прерывать
+        возврат звука на станцию и остановку фоновых задач.
+        """
         logger.info("🛑 Остановка стриминга...")
         self._stream_state_running = False
         await self._remember_ruark_volume()
-        await self._ruark_controls.stop()
-        await self._stop_stream_on_stream_server()
-        await self._ruark_controls.set_volume(self._ruark_volume)
-        await self._ruark_controls.turn_power_off()
+        await self._safe_stop_step(self._ruark_controls.stop)
+        await self._safe_stop_step(self._stop_stream_on_stream_server)
+        await self._safe_stop_step(
+            self._ruark_controls.set_volume, self._ruark_volume
+        )
+        await self._safe_stop_step(self._ruark_controls.turn_power_off)
         await self._station_controls.unmute()
         # Остановка WebSocket-клиента
         await self._station_controls.stop_ws_client()
@@ -126,6 +136,19 @@ class MainStreamManager:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         logger.info("✅ Стриминг остановлен")
+
+    async def _safe_stop_step(
+        self,
+        func: Callable[..., Awaitable[Any]],
+        *args: Any,
+    ) -> None:
+        """Выполняет шаг остановки, не прерывая её при недоступности."""
+        try:
+            await func(*args)
+        except Exception as e:
+            logger.warning(
+                f"⚠️ Шаг остановки {func.__name__} не выполнен: {e}"
+            )
 
     async def streaming(self):
         """Основной поток управления стримингом."""
@@ -335,8 +358,29 @@ class MainStreamManager:
             return
 
         ctx.silent_checks = 0
+        if await self._is_ruark_powered_off():
+            logger.warning(
+                "🔌 Ruark выключен пользователем — останавливаем стриминг, "
+                "звук возвращается на станцию"
+            )
+            # stop() отменяет и задачу цикла, поэтому запускается отдельно
+            self._shutdown_task = asyncio.create_task(self.stop())
+            return
+
         logger.warning("⚠️ Станция играет, а Ruark молчит — пересылаем поток")
         await self._resend_current_track(track, ctx, "страховка от тишины")
+
+    async def _is_ruark_powered_off(self) -> bool:
+        """Проверяет, выключено ли питание Ruark.
+
+        Ошибка запроса трактуется как «не выключен»: недоступный fsapi
+        не должен останавливать стриминг.
+        """
+        try:
+            return await self._ruark_controls.get_power_status() == "0"
+        except Exception as e:
+            logger.debug(f"Не удалось узнать питание Ruark: {e}")
+            return False
 
     async def _resend_current_track(
         self, track: Track, ctx: "_CycleContext", reason: str
