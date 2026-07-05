@@ -195,6 +195,8 @@ async def test_new_client_displaces_previous_stream():
 
 async def test_flac_codec_selects_flac_params_and_mime():
     handler, ruark = make_handler()
+    # Фейковая команда: на CI-раннере нет ffmpeg
+    set_params(handler, ["sleep", "30"])
 
     await handler.play_stream(
         "http://example/track.flac", codec="flac", title="Т", artist="А"
