@@ -358,3 +358,42 @@ async def test_loop_waits_for_station_events_with_heartbeat(fast_sleep):
 
     wait_mock = manager._ws_client.wait_for_state_update
     wait_mock.assert_called_with(STREAM_POLL_INTERVAL)
+
+
+async def test_silent_ruark_triggers_track_resend(fast_sleep, monkeypatch):
+    """Станция играет трек, Ruark молчит — поток пересылается."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_CHECK_INTERVAL", 0.0
+    )
+    track = make_track(progress=50.0)
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark(is_playing=False))
+    send = manager._send_track_to_stream_server
+
+    # Первая отправка — свитч, вторая — страховка от тишины
+    await drive_streaming(manager, until=lambda: send.call_count >= 2)
+
+    assert send.call_count >= 2
+    resend_call = send.call_args_list[1]
+    assert resend_call.kwargs["start_position"] == pytest.approx(50.0)
+
+
+async def test_playing_ruark_does_not_trigger_resend(fast_sleep, monkeypatch):
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_CHECK_INTERVAL", 0.0
+    )
+    track = make_track(progress=50.0)
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark(is_playing=True))
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.2)
+
+    # Только первоначальный свитч, страховка молчит
+    assert send.call_count == 1

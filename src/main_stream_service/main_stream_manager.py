@@ -15,6 +15,8 @@ from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     PROGRESS_JUMP_THRESHOLD,
     RUARK_IDLE_VOLUME,
+    SILENCE_CHECK_INTERVAL,
+    SILENCE_RESEND_GRACE,
     STREAM_POLL_INTERVAL,
     STREAMING_RESTART_DELAY,
 )
@@ -227,6 +229,7 @@ class MainStreamManager:
         await self._resync_after_progress_jump(track, ctx)
         await self._switch_to_new_track(track, ctx)
         await self._restore_ruark_after_speech(track, ctx)
+        await self._resume_track_if_silent(track, ctx)
         await self._fade_alice_if_playing(track)
         ctx.volume_set_count = 0
         return track
@@ -360,6 +363,41 @@ class MainStreamManager:
                 f"⏳ Скачок прогресса ~{expected_progress:.0f}s → "
                 f"{track.progress:.0f}s — ждём подтверждения"
             )
+
+    async def _resume_track_if_silent(
+        self, track: Track, ctx: "_CycleContext"
+    ) -> None:
+        """Страховка: станция играет трек, а Ruark молчит — переслать поток.
+
+        Закрывает любые «тихие» отказы: самоостановку FFmpeg, обрывы
+        соединения, уход Ruark вперёд трека. Проверка Ruark по UPnP
+        дорогая, поэтому выполняется не чаще SILENCE_CHECK_INTERVAL
+        и требует двух подтверждений тишины подряд.
+        """
+        if track.type == "FmRadio" or not track.playing or ctx.speak_count:
+            ctx.silent_checks = 0
+            return
+
+        now = time.monotonic()
+        if now - ctx.last_stream_sent_at < SILENCE_RESEND_GRACE:
+            return
+        if now - ctx.last_silence_check_at < SILENCE_CHECK_INTERVAL:
+            return
+        ctx.last_silence_check_at = now
+
+        if await self._ruark_controls.is_playing():
+            ctx.silent_checks = 0
+            return
+
+        ctx.silent_checks += 1
+        if ctx.silent_checks < 2:
+            return
+
+        ctx.silent_checks = 0
+        logger.warning(
+            "⚠️ Станция играет, а Ruark молчит — пересылаем поток"
+        )
+        await self._resend_current_track(track, ctx, "страховка от тишины")
 
     async def _resend_current_track(
         self, track: Track, ctx: "_CycleContext", reason: str
