@@ -13,6 +13,7 @@ from ruark_audio_system.constants import DEFAULT_STREAM_TITLE
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
 from .constants import (
+    DIDL_MIME_TYPES,
     FFMPEG_AAC_PARAMS,
     FFMPEG_FLAC_PARAMS,
     FFMPEG_LOCAL_MP3_PARAMS,
@@ -60,6 +61,11 @@ class StreamHandler:
         """MIME-тип текущего потока."""
         return STREAM_MIME_TYPES[self._stream_codec]
 
+    @property
+    def didl_media_type(self) -> str:
+        """MIME-тип потока для protocolInfo в DIDL-метаданных Ruark."""
+        return DIDL_MIME_TYPES[self._stream_codec]
+
     async def execute_with_lock(
         self,
         func: Callable[..., Awaitable[Any]],
@@ -101,7 +107,7 @@ class StreamHandler:
             track_url,
             title=title,
             artist=artist,
-            mime_type=self.stream_media_type,
+            mime_type=self.didl_media_type,
         )
         await self.execute_with_lock(self._ruark_controls.play)
 

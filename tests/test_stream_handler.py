@@ -193,6 +193,25 @@ async def test_new_client_displaces_previous_stream():
     await handler.stop_ffmpeg()
 
 
+async def test_radio_declared_as_mpeg_in_didl(fast_sleep):
+    """Радио: Content-Type остаётся aac, но в DIDL — audio/mpeg.
+
+    Ресурс с protocolInfo audio/aac Ruark качает, но не воспроизводит —
+    регрессия радио после перехода на mime по кодеку.
+    """
+    handler, ruark = make_handler()
+    set_params(handler, ["sleep", "30"])
+
+    await handler.play_stream(
+        "http://example/master.m3u8", radio=True, title="ROCK FM"
+    )
+
+    assert handler.stream_media_type == "audio/aac"
+    call = ruark.set_av_transport_uri.call_args
+    assert call.kwargs["mime_type"] == "audio/mpeg"
+    await handler.stop_ffmpeg()
+
+
 async def test_flac_codec_selects_flac_params_and_mime():
     handler, ruark = make_handler()
     # Фейковая команда: на CI-раннере нет ffmpeg
