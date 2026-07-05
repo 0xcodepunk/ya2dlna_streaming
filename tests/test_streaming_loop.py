@@ -13,6 +13,7 @@ from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
     RUARK_IDLE_VOLUME,
     STREAM_POLL_INTERVAL,
+    TRACK_SOURCE_TTL,
 )
 from yandex_station.models import Track
 from yandex_station.station_controls import YandexStationControls
@@ -106,6 +107,24 @@ def make_manager(station_controls, ruark, track_url="http://track/url"):
     )
     manager._send_track_to_stream_server = AsyncMock()
     return manager
+
+
+def set_source_by_id(manager):
+    """Источник с уникальной ссылкой по id — чтобы отличать треки."""
+
+    async def resolver(track_id, quality=None):
+        return TrackSource(url=f"http://track/{track_id}", codec="mp3")
+
+    manager._yandex_music_api.get_track_source.side_effect = resolver
+
+
+def source_calls_for(manager, track_id):
+    """Вызовы get_track_source для конкретного трека."""
+    return [
+        call
+        for call in manager._yandex_music_api.get_track_source.call_args_list
+        if call.kwargs.get("track_id") == track_id
+    ]
 
 
 async def drive_streaming(manager, until, timeout=1.0):
@@ -399,6 +418,109 @@ async def test_powered_off_ruark_stops_streaming(fast_sleep, monkeypatch):
     # Поток не пересылался выключенному устройству
     assert send.call_count == 1  # только первоначальный свитч
     station.unmute.assert_called()
+
+
+async def test_next_track_prefetched_in_background(fast_sleep):
+    """Ссылка следующего трека резолвится фоном, пока играет текущий."""
+    track = make_track(next_id="43")
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark())
+    set_source_by_id(manager)
+
+    await drive_streaming(
+        manager, until=lambda: len(source_calls_for(manager, "43")) > 0
+    )
+
+    assert len(source_calls_for(manager, "43")) == 1
+    # Предзагрузка ничего не отправляет — сосед ещё не играет
+    for call in manager._send_track_to_stream_server.call_args_list:
+        assert call.args[0] == "http://track/42"
+
+
+async def test_switch_uses_prefetched_link(fast_sleep):
+    """Переключение вперёд берёт ссылку из кеша, а не резолвит заново."""
+    first = make_track(id="42", next_id="43")
+    second = make_track(id="43", prev_id="42", progress=0.5)
+    station = make_station_controls(tracks=[first] * 8 + [second])
+    manager = make_manager(station, make_ruark())
+    set_source_by_id(manager)
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(
+        manager,
+        until=lambda: any(
+            call.args[0] == "http://track/43" for call in send.call_args_list
+        ),
+    )
+
+    # Единственный резолв — фоновый префетч, свитч попал в кеш
+    assert len(source_calls_for(manager, "43")) == 1
+
+
+async def test_return_to_previous_track_uses_cache(fast_sleep):
+    """Возврат к прошлому треку не ждёт резолва — ссылка уже в кеше."""
+    first = make_track(id="42", next_id="43")
+    second = make_track(id="43", prev_id="42", progress=0.5)
+    back = make_track(id="42", next_id="43", progress=1.0)
+    station = make_station_controls(tracks=[first] * 6 + [second] * 6 + [back])
+    manager = make_manager(station, make_ruark())
+    set_source_by_id(manager)
+    send = manager._send_track_to_stream_server
+
+    def returned_to_first():
+        sent = [call.args[0] for call in send.call_args_list]
+        return sent.count("http://track/42") >= 2
+
+    await drive_streaming(manager, until=returned_to_first)
+
+    # Трек 42 резолвился один раз — при первом свитче
+    assert len(source_calls_for(manager, "42")) == 1
+
+
+async def test_resync_reuses_cached_source(fast_sleep):
+    """Ресинк после перемотки не резолвит ссылку заново."""
+    tracks = [make_track(progress=10.0)] * 4 + [make_track(progress=120.0)]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark())
+    set_source_by_id(manager)
+    send = manager._send_track_to_stream_server
+
+    def resync_happened():
+        return any(
+            call.kwargs.get("start_position") == pytest.approx(120.0)
+            for call in send.call_args_list
+        )
+
+    await drive_streaming(manager, until=resync_happened)
+
+    # Свитч плюс ресинк — а резолв ссылки только один
+    assert len(source_calls_for(manager, "42")) == 1
+
+
+async def test_radio_neighbors_not_prefetched(fast_sleep):
+    """Для радио предзагрузка соседних треков не запускается."""
+    track = make_track(
+        id="fm_jazz", type="FmRadio", duration=0.0, next_id="43"
+    )
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark(is_playing=False))
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.15)
+
+    manager._yandex_music_api.get_track_source.assert_not_called()
+
+
+async def test_cached_source_expires_after_ttl():
+    """Протухшая запись кеша не используется и удаляется."""
+    manager = make_manager(make_station_controls(make_track()), make_ruark())
+    stale = TrackSource(url="http://track/old", codec="mp3")
+    manager._source_cache["42"] = (
+        stale,
+        time.monotonic() - TRACK_SOURCE_TTL - 1.0,
+    )
+
+    assert manager._get_cached_source("42") is None
+    assert "42" not in manager._source_cache
 
 
 async def test_stop_survives_unreachable_ruark():

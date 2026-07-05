@@ -8,7 +8,7 @@ import aiohttp
 from injector import inject
 
 from core.config.settings import settings
-from main_stream_service.yandex_music_api import YandexMusicAPI
+from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from ruark_audio_system.volume_store import RuarkVolumeStore
@@ -20,6 +20,8 @@ from yandex_station.constants import (
     SILENCE_RESEND_GRACE,
     STREAM_POLL_INTERVAL,
     STREAMING_RESTART_DELAY,
+    TRACK_SOURCE_CACHE_SIZE,
+    TRACK_SOURCE_TTL,
 )
 from yandex_station.models import Track
 from yandex_station.station_controls import YandexStationControls
@@ -81,6 +83,8 @@ class MainStreamManager:
         self._tasks = []  # Хранение фоновых задач
         # Ссылка на задачу авто-остановки (Ruark выключен пользователем)
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._source_cache: dict[str, tuple[TrackSource, float]] = {}
+        self._prefetch_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def start(self):
         """Запуск всех стриминговых процессов."""
@@ -132,9 +136,17 @@ class MainStreamManager:
         # Отмена всех активных задач
         for task in self._tasks:
             task.cancel()
+        for prefetch_task in self._prefetch_tasks.values():
+            prefetch_task.cancel()
 
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(
+            *self._tasks,
+            *self._prefetch_tasks.values(),
+            return_exceptions=True,
+        )
         self._tasks.clear()
+        self._prefetch_tasks.clear()
+        self._source_cache.clear()
         logger.info("✅ Стриминг остановлен")
 
     async def _safe_stop_step(
@@ -238,6 +250,7 @@ class MainStreamManager:
         track = await self._refresh_track_if_unchanged(track, ctx)
         await self._resync_after_progress_jump(track, ctx)
         await self._switch_to_new_track(track, ctx)
+        self._schedule_prefetch(track)
         await self._restore_ruark_after_speech(track, ctx)
         await self._resume_track_if_silent(track, ctx)
         await self._fade_alice_if_playing(track)
@@ -382,6 +395,75 @@ class MainStreamManager:
             logger.debug(f"Не удалось узнать питание Ruark: {e}")
             return False
 
+    def _get_cached_source(self, track_id: str) -> TrackSource | None:
+        """Возвращает свежий источник из кеша или None, если протух."""
+        cached = self._source_cache.get(track_id)
+        if not cached:
+            return None
+        source, cached_at = cached
+        if time.monotonic() - cached_at > TRACK_SOURCE_TTL:
+            del self._source_cache[track_id]
+            return None
+        return source
+
+    def _store_source(self, track_id: str, source: TrackSource) -> None:
+        """Кладёт источник в кеш, вытесняя самую старую запись."""
+        if len(self._source_cache) >= TRACK_SOURCE_CACHE_SIZE:
+            oldest = min(
+                self._source_cache,
+                key=lambda key: self._source_cache[key][1],
+            )
+            del self._source_cache[oldest]
+        self._source_cache[track_id] = (source, time.monotonic())
+
+    async def _resolve_track_source(self, track_id: str) -> TrackSource | None:
+        """Источник трека: из кеша или свежим запросом с записью в кеш."""
+        cached = self._get_cached_source(track_id)
+        if cached:
+            logger.info(f"⚡ Ссылка для {track_id} взята из кеша")
+            return cached
+        source = await self._yandex_music_api.get_track_source(
+            track_id=track_id,
+            quality=settings.stream_quality,
+        )
+        if source:
+            self._store_source(track_id, source)
+        return source
+
+    def _schedule_prefetch(self, track: Track) -> None:
+        """Фоново предзагружает ссылки соседних треков очереди.
+
+        Следующий трек нужен для мгновенного переключения вперёд,
+        предыдущий — для возврата назад. Уже закешированные и уже
+        загружаемые треки пропускаются.
+        """
+        if track.type == "FmRadio":
+            return
+        for neighbor_id in (track.next_id, track.prev_id):
+            if not neighbor_id or neighbor_id == track.id:
+                continue
+            if self._get_cached_source(neighbor_id):
+                continue
+            if neighbor_id in self._prefetch_tasks:
+                continue
+            self._prefetch_tasks[neighbor_id] = asyncio.create_task(
+                self._prefetch_source(neighbor_id)
+            )
+
+    async def _prefetch_source(self, track_id: str) -> None:
+        """Резолвит и кеширует ссылку трека в фоновой задаче."""
+        try:
+            source = await self._resolve_track_source(track_id)
+            if source:
+                logger.info(
+                    f"📦 Предзагружена ссылка трека {track_id} "
+                    f"({source.codec})"
+                )
+        except Exception as e:
+            logger.debug(f"Предзагрузка трека {track_id} не удалась: {e}")
+        finally:
+            self._prefetch_tasks.pop(track_id, None)
+
     async def _resend_current_track(
         self, track: Track, ctx: "_CycleContext", reason: str
     ) -> None:
@@ -390,10 +472,7 @@ class MainStreamManager:
             f"🔁 Ресинк стрима ({reason}): позиция {track.progress:.0f}s"
         )
         resync_started = time.monotonic()
-        source = await self._yandex_music_api.get_track_source(
-            track_id=track.id,
-            quality=settings.stream_quality,
-        )
+        source = await self._resolve_track_source(track.id)
         if not source:
             logger.warning("⚠️ Не удалось получить URL трека для ресинка")
             return
@@ -431,10 +510,7 @@ class MainStreamManager:
             ctx.track_url = await self._station_controls.get_radio_url()
             logger.info(f"🎵 URL радиостанции: {ctx.track_url}")
         else:
-            source = await self._yandex_music_api.get_track_source(
-                track_id=track.id,
-                quality=settings.stream_quality,
-            )
+            source = await self._resolve_track_source(track.id)
             ctx.track_url = source.url if source else None
             codec = source.codec if source else "mp3"
         resolve_seconds = time.monotonic() - switch_started
