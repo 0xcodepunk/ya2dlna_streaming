@@ -70,3 +70,14 @@ async def test_missing_entity_info_is_safe():
     assert track is not None
     assert track.next_id is None
     assert track.prev_id is None
+
+
+async def test_say_sends_repeat_command_to_station():
+    """say() превращает фразу в команду локального TTS."""
+    controls = make_controls(dict(BASE_PLAYER_STATE))
+
+    await controls.say("тестовая фраза")
+
+    controls._ws_client.send_command.assert_awaited_once_with(
+        {"command": "sendText", "text": "Повтори за мной тестовая фраза"}
+    )

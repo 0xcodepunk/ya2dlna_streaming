@@ -5,7 +5,11 @@ from typing import Any
 
 from injector import inject
 
-from yandex_station.constants import ALICE_ACTIVE_STATES, FADE_TIME
+from yandex_station.constants import (
+    ALICE_ACTIVE_STATES,
+    FADE_TIME,
+    TTS_REPEAT_PREFIX,
+)
 from yandex_station.models import Track
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_ws_control import YandexStationClient
@@ -61,6 +65,10 @@ class YandexStationControls:
             )
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке текстового сообщения: {e}")
+
+    async def say(self, phrase: str) -> None:
+        """Произносит фразу голосом Алисы через локальный TTS."""
+        await self.send_text(f"{TTS_REPEAT_PREFIX} {phrase}")
 
     async def get_current_state(self) -> dict[str, Any] | None:
         """Получение текущего состояния станции."""

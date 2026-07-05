@@ -19,6 +19,8 @@ from yandex_station.constants import (
     SILENCE_CHECK_INTERVAL,
     SILENCE_RESEND_GRACE,
     STREAM_POLL_INTERVAL,
+    STREAMING_FAILURE_ANNOUNCE_AFTER,
+    STREAMING_FAILURE_STREAK_RESET,
     STREAMING_RESTART_DELAY,
     TRACK_SOURCE_CACHE_SIZE,
     TRACK_SOURCE_TTL,
@@ -28,6 +30,12 @@ from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
 
 logger = getLogger(__name__)
+
+# Фразы голосовых уведомлений об ошибках (озвучивает станция)
+RUARK_MISSING_PHRASE = "Стрим не запустился: не вижу Руарк в сети"
+STREAM_BROKEN_PHRASE = (
+    "Стрим сломался и сам не восстанавливается, загляни в логи"
+)
 
 
 @dataclass
@@ -114,6 +122,9 @@ class MainStreamManager:
                 )
         except Exception as e:
             logger.error(f"❌ Не удалось запустить стриминг: {e}")
+            # Станция доступна — озвучиваем причину перед остановкой
+            if not isinstance(ws_result, BaseException):
+                await self._announce_error(RUARK_MISSING_PHRASE)
             await self._station_controls.stop_ws_client()
             return
 
@@ -628,7 +639,14 @@ class MainStreamManager:
             await self._station_controls.unmute()
 
     async def _wrap_streaming(self):
-        """Следит за потоком стриминга и перезапускает его при падении."""
+        """Следит за потоком стриминга и перезапускает его при падении.
+
+        Серия быстрых падений подряд означает, что сам перезапуск
+        не помогает (например, умер DLNA-сервер) — один раз
+        озвучивается ошибка, чтобы тишина не осталась без объяснения.
+        """
+        failure_streak = 0
+        last_failure_at = 0.0
         while self._stream_state_running:
             try:
                 logger.info("🚀 Запуск потока стриминга")
@@ -638,12 +656,29 @@ class MainStreamManager:
                 break
             except Exception as e:
                 logger.error(f"❌ Поток стриминга упал с ошибкой: {e}")
+                now = time.monotonic()
+                if now - last_failure_at > STREAMING_FAILURE_STREAK_RESET:
+                    failure_streak = 0
+                last_failure_at = now
+                failure_streak += 1
+                if failure_streak == STREAMING_FAILURE_ANNOUNCE_AFTER:
+                    # Станция замьючена стримом — вернуть звук,
+                    # иначе объявление не услышать
+                    await self._safe_stop_step(self._station_controls.unmute)
+                    await self._announce_error(STREAM_BROKEN_PHRASE)
                 logger.info(
                     f"🔁 Перезапуск стриминга через "
                     f"{STREAMING_RESTART_DELAY} секунд..."
                 )
                 await asyncio.sleep(STREAMING_RESTART_DELAY)
                 logger.debug("🔄 Перезапуск потока после падения")
+
+    async def _announce_error(self, phrase: str) -> None:
+        """Озвучивает ошибку голосом станции, не роняя основной поток."""
+        try:
+            await self._station_controls.say(phrase)
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось озвучить ошибку: {e}")
 
     async def _remember_ruark_volume(self):
         """Запоминает пользовательскую громкость Ruark для нового сеанса."""
