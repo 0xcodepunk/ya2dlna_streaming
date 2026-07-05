@@ -11,7 +11,7 @@ from core.dependencies.main_di_container import MainDIContainer
 from core.logging.setup import setup_logging
 from main_stream_service.main_stream_manager import MainStreamManager
 
-setup_logging()
+setup_logging("api")
 
 logger = getLogger(__name__)
 

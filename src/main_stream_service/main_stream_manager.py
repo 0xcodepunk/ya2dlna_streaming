@@ -394,9 +394,7 @@ class MainStreamManager:
             return
 
         ctx.silent_checks = 0
-        logger.warning(
-            "⚠️ Станция играет, а Ruark молчит — пересылаем поток"
-        )
+        logger.warning("⚠️ Станция играет, а Ruark молчит — пересылаем поток")
         await self._resend_current_track(track, ctx, "страховка от тишины")
 
     async def _resend_current_track(

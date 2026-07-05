@@ -9,8 +9,14 @@ LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 
-def setup_logging():
-    """Настройка логирования."""
+def setup_logging(service_name: str = "app"):
+    """Настройка логирования.
+
+    Args:
+        service_name (str): Имя лог-файла сервиса. У каждого процесса
+            должен быть свой файл: два RotatingFileHandler на одном
+            файле ломают ротацию и теряют записи.
+    """
     logging_config = {
         "version": 1,
         "disable_existing_loggers": True,
@@ -36,7 +42,7 @@ def setup_logging():
             },
             "file": {
                 "class": "logging.handlers.RotatingFileHandler",
-                "filename": os.path.join(LOG_DIR, "app.log"),
+                "filename": os.path.join(LOG_DIR, f"{service_name}.log"),
                 "formatter": "detailed",
                 "level": "INFO",
                 "maxBytes": 5 * 1024 * 1024,
