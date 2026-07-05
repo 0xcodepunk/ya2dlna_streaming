@@ -304,25 +304,35 @@ class MainStreamManager:
     async def _resume_radio_if_silent(
         self, track: Track, ctx: "_CycleContext"
     ) -> None:
-        """Возобновляет радио, если станция играет, а Ruark молчит."""
-        if not (
-            ctx.last_track_progress != track.progress
-            and track.type == "FmRadio"
-            and not await self._ruark_controls.is_playing()
-        ):
+        """Возобновляет радио, если станция играет, а Ruark молчит.
+
+        Пересылка не чаще SILENCE_RESEND_GRACE после последней отправки:
+        свежепривязанному потоку нужно время на буферизацию HLS, иначе
+        ежесекундные перепривязки сами не дают радио стартовать.
+        """
+        if track.type != "FmRadio":
+            return
+        if ctx.last_track_progress == track.progress:
+            return
+        # До первой привязки потока возобновлять нечего
+        if not ctx.last_stream_sent_at:
+            return
+        if time.monotonic() - ctx.last_stream_sent_at < SILENCE_RESEND_GRACE:
+            return
+        if await self._ruark_controls.is_playing():
             return
 
         logger.info("🔁 Возобновляем воспроизведение радио")
         radio_url = await self._station_controls.get_radio_url()
-        if radio_url:
-            await self._send_track_to_stream_server(
-                track_url=radio_url,
-                radio=True,
-                title=track.title,
-            )
-            await asyncio.sleep(1)
-        else:
+        if not radio_url:
             logger.warning("⚠️ Не удалось получить URL радиостанции")
+            return
+        ctx.last_stream_sent_at = time.monotonic()
+        await self._send_track_to_stream_server(
+            track_url=radio_url,
+            radio=True,
+            title=track.title,
+        )
 
     async def _refresh_track_if_unchanged(
         self, track: Track, ctx: "_CycleContext"
@@ -577,7 +587,10 @@ class MainStreamManager:
             logger.info("🔁 Возвращаем громкость Ruark")
             await self._ruark_controls.set_volume(self._ruark_volume)
 
-            for _ in range(30):
+            # Радио буферизует HLS дольше, чем стартует трек, —
+            # ждём дольше, чтобы не перепривязывать поток зря
+            attempts = 80 if track.type == "FmRadio" else 30
+            for _ in range(attempts):
                 if await self._ruark_controls.is_playing():
                     logger.info("▶️ Ruark начал играть")
                     await self._station_controls.fade_out_alice_volume()
@@ -592,6 +605,7 @@ class MainStreamManager:
                 if ctx.track_url:
                     # Для трека продолжаем с текущей позиции станции,
                     # а не с начала — иначе рассинхрон
+                    ctx.last_stream_sent_at = time.monotonic()
                     await self._send_track_to_stream_server(
                         ctx.track_url,
                         radio=track.type == "FmRadio",

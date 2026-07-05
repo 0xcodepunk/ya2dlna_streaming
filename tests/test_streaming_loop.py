@@ -179,6 +179,47 @@ async def test_radio_track_sent_with_radio_flag(fast_sleep):
         assert call.kwargs["radio"] is True
 
 
+async def test_silent_radio_not_respammed_within_grace(fast_sleep):
+    """Молчащий Ruark на радио не бомбардируется перепривязками."""
+    # Прогресс радио тикает каждую итерацию — как на живой станции
+    tracks = [
+        make_track(
+            id="fm_jazz", type="FmRadio", duration=0.0, progress=float(p)
+        )
+        for p in range(1, 60)
+    ]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark(is_playing=False))
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.3)
+
+    # Только первоначальный свитч: грейс не даёт слать каждую итерацию
+    assert send.call_count == 1
+
+
+async def test_silent_radio_resent_after_grace(fast_sleep, monkeypatch):
+    """После грейса радио пересылается, если Ruark так и молчит."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    tracks = [
+        make_track(
+            id="fm_jazz", type="FmRadio", duration=0.0, progress=float(p)
+        )
+        for p in range(1, 60)
+    ]
+    station = make_station_controls(tracks=tracks)
+    manager = make_manager(station, make_ruark(is_playing=False))
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: send.call_count >= 2)
+
+    assert send.call_count >= 2
+    resume_call = send.call_args_list[1]
+    assert resume_call.kwargs["radio"] is True
+
+
 async def test_alice_speech_ducks_ruark_volume(fast_sleep):
     track = make_track()
     # Первый вызов — инициализация last_alice_state, затем смена состояния
