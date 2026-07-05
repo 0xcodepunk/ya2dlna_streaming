@@ -28,18 +28,6 @@ logger = getLogger(__name__)
 
 
 @dataclass
-class _JumpCandidate:
-    """Неподтверждённый скачок прогресса, ожидающий второго тика."""
-
-    track_id: str
-    # Ожидаемый прогресс на момент скачка (траектория до прыжка)
-    expected: float
-    # Прогресс, заявленный станцией в скачке
-    progress: float
-    seen_at: float
-
-
-@dataclass
 class _CycleContext:
     """Изменяемое состояние цикла стриминга между итерациями."""
 
@@ -54,7 +42,6 @@ class _CycleContext:
     speak_count: int = 0
     track_url: str | None = None
     last_log_signature: tuple[str, bool, str | None] | None = None
-    jump_candidate: _JumpCandidate | None = None
     # Момент последней отправки потока (time.monotonic)
     last_stream_sent_at: float = 0.0
     last_silence_check_at: float = 0.0
@@ -298,71 +285,25 @@ class MainStreamManager:
         Ловит разрывы, при которых id трека не меняется: повтор
         (прогресс к нулю), перемотку (скачок в любую сторону)
         и продолжение после паузы. Прогресс сравнивается с ожидаемым
-        значением с учётом прошедшего времени, а скачок должен
-        подтвердиться вторым тиком: станция иногда рапортует ложные
-        прыжки прогресса, из-за которых Ruark уезжал вперёд трека.
+        значением с учётом времени, прошедшего со снапшота, — иначе
+        долгая итерация (fade, запросы) выглядела бы как скачок.
         """
         if track.type == "FmRadio" or not track.playing:
-            ctx.jump_candidate = None
             return
         if track.id != ctx.last_track.id:
-            ctx.jump_candidate = None
             return
 
-        now = time.monotonic()
-
-        candidate = ctx.jump_candidate
-        if candidate is not None:
-            ctx.jump_candidate = None
-            if candidate.track_id == track.id:
-                cand_elapsed = now - candidate.seen_at
-                drift_new = abs(
-                    track.progress - (candidate.progress + cand_elapsed)
-                )
-                drift_old = abs(
-                    track.progress - (candidate.expected + cand_elapsed)
-                )
-                if (
-                    drift_new <= drift_old
-                    and drift_new <= PROGRESS_JUMP_THRESHOLD
-                ):
-                    # Станция продолжает с новой позиции — скачок настоящий
-                    await self._resend_current_track(
-                        track, ctx, "перемотка подтверждена"
-                    )
-                    return
-                logger.info(
-                    f"🚫 Ложный скачок прогресса проигнорирован: "
-                    f"станция продолжает с ~{track.progress:.0f}s"
-                )
-                return
-
         resumed = not ctx.last_track_playing
-        elapsed = now - ctx.last_progress_at
+        elapsed = time.monotonic() - ctx.last_progress_at
         expected_progress = ctx.last_track_progress + elapsed
         jumped = (
             abs(track.progress - expected_progress) > PROGRESS_JUMP_THRESHOLD
         )
-
-        if resumed:
-            # Переход из паузы в игру — надёжный сигнал, без дебаунса
-            await self._resend_current_track(
-                track, ctx, "продолжение после паузы"
-            )
+        if not (resumed or jumped):
             return
 
-        if jumped:
-            # Не верим одиночному репорту — ждём подтверждения тиком
-            ctx.jump_candidate = _JumpCandidate(
-                track_id=track.id,
-                expected=expected_progress,
-                progress=track.progress,
-                seen_at=now,
-            )
-            logger.info(
-                f"⏳ Скачок прогресса ~{expected_progress:.0f}s → "
-                f"{track.progress:.0f}s — ждём подтверждения"
-            )
+        reason = "продолжение после паузы" if resumed else "разрыв прогресса"
+        await self._resend_current_track(track, ctx, reason)
 
     async def _resume_track_if_silent(
         self, track: Track, ctx: "_CycleContext"

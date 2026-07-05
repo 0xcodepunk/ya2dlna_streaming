@@ -292,7 +292,7 @@ async def test_resync_ignores_stale_progress_snapshot():
     manager._send_track_to_stream_server.assert_not_called()
 
 
-async def test_resync_confirms_real_jump_on_second_tick():
+async def test_resync_detects_real_jump_with_fresh_snapshot():
     manager = make_manager(make_station_controls(make_track()), make_ruark())
     ctx = _CycleContext(
         last_track=make_track(progress=10.0),
@@ -301,39 +301,12 @@ async def test_resync_confirms_real_jump_on_second_tick():
         last_progress_at=time.monotonic() - 0.5,
         last_track_playing=True,
     )
-    send = manager._send_track_to_stream_server
 
-    # Первый тик: скачок замечен, но ресинка нет — ждём подтверждения
     await manager._resync_after_progress_jump(make_track(progress=120.0), ctx)
-    send.assert_not_called()
-    assert ctx.jump_candidate is not None
 
-    # Второй тик: станция продолжает с новой позиции — скачок настоящий
-    await manager._resync_after_progress_jump(make_track(progress=120.4), ctx)
-    send.assert_called_once()
-    assert send.call_args.kwargs["start_position"] == pytest.approx(120.4)
-
-
-async def test_resync_ignores_phantom_jump():
-    """Станция рапортует ложный прыжок и возвращается к траектории."""
-    manager = make_manager(make_station_controls(make_track()), make_ruark())
-    ctx = _CycleContext(
-        last_track=make_track(progress=79.0),
-        last_alice_state="IDLE",
-        last_track_progress=79.0,
-        last_progress_at=time.monotonic() - 0.5,
-        last_track_playing=True,
-    )
     send = manager._send_track_to_stream_server
-
-    # Ложный репорт: станция «прыгнула» на 108, реально оставаясь на ~79
-    await manager._resync_after_progress_jump(make_track(progress=108.0), ctx)
-    send.assert_not_called()
-
-    # Следующий тик: станция продолжает старую траекторию — игнорируем
-    await manager._resync_after_progress_jump(make_track(progress=80.0), ctx)
-    send.assert_not_called()
-    assert ctx.jump_candidate is None
+    send.assert_called_once()
+    assert send.call_args.kwargs["start_position"] == pytest.approx(120.0)
 
 
 async def test_stream_start_midtrack_continues_from_position(fast_sleep):
