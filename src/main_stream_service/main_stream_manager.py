@@ -254,6 +254,7 @@ class MainStreamManager:
             await self._send_track_to_stream_server(
                 track_url=radio_url,
                 radio=True,
+                title=track.title,
             )
             await asyncio.sleep(1)
         else:
@@ -313,6 +314,8 @@ class MainStreamManager:
             track_url,
             radio=False,
             start_position=track.progress,
+            title=track.title,
+            artist=track.artist,
         )
         logger.info(
             f"⏱ Ресинк выполнен за "
@@ -357,6 +360,8 @@ class MainStreamManager:
                 ctx.track_url,
                 radio=track.type == "FmRadio",
                 start_position=start_position,
+                title=track.title,
+                artist=track.artist,
             )
             logger.info(
                 f"⏱ Переключение на {track.id}: ссылка "
@@ -399,6 +404,8 @@ class MainStreamManager:
                         start_position=(
                             track.progress if track.type != "FmRadio" else 0.0
                         ),
+                        title=track.title,
+                        artist=track.artist,
                     )
                 else:
                     logger.warning(
@@ -495,6 +502,8 @@ class MainStreamManager:
         track_url: str,
         radio: bool = False,
         start_position: float = 0.0,
+        title: str = "",
+        artist: str = "",
     ):
         """Отправляет ссылку на трек на стрим сервер.
 
@@ -502,6 +511,8 @@ class MainStreamManager:
             track_url (str): Прямая ссылка на источник потока.
             radio (bool): Режим радио.
             start_position (float): Позиция старта в секундах.
+            title (str): Название трека для дисплея Ruark.
+            artist (str): Исполнитель для дисплея Ruark.
         """
         try:
             async with aiohttp.ClientSession() as session:
@@ -513,6 +524,8 @@ class MainStreamManager:
                         "yandex_url": track_url,
                         "radio": str(radio).lower(),
                         "start_position": f"{start_position:.1f}",
+                        "title": title,
+                        "artist": artist,
                     },
                 ) as resp:
                     response = await resp.json()

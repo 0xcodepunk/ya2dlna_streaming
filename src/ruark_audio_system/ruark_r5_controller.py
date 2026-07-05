@@ -2,11 +2,12 @@ import asyncio
 import urllib.parse
 from logging import getLogger
 from typing import Any, Dict, List, Literal, Optional
+from xml.sax.saxutils import escape
 
 import upnpclient
 
 from core.config.settings import settings
-from ruark_audio_system.constants import META_INFO
+from ruark_audio_system.constants import DEFAULT_STREAM_TITLE, META_INFO
 from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.fsapi_client import RuarkFsApiClient
 
@@ -190,9 +191,16 @@ class RuarkR5Controller:
         )
 
     #   AVTransport
-    async def set_av_transport_uri(self, uri: str) -> None:
-        """Установка нового потока."""
-        metadata = self.generate_metadata_with_fake_duration(uri)
+    async def set_av_transport_uri(
+        self,
+        uri: str,
+        title: str = DEFAULT_STREAM_TITLE,
+        artist: str = "",
+    ) -> None:
+        """Установка нового потока с метаданными для дисплея."""
+        metadata = self.generate_metadata_with_fake_duration(
+            uri, title=title, artist=artist
+        )
         await asyncio.to_thread(
             self.av_transport.SetAVTransportURI,
             InstanceID=0,
@@ -383,10 +391,24 @@ class RuarkR5Controller:
         """Выключение питания."""
         return await self._fsapi.turn_power_off()
 
-    def generate_metadata_with_fake_duration(self, uri: str) -> str:
-        """Генерация DIDL-Lite метаданных с длительностью 999999 часов."""
-        logger.info(f"🔊 Генерируем метаданные для {uri}")
-        return META_INFO.format(url=uri)
+    def generate_metadata_with_fake_duration(
+        self,
+        uri: str,
+        title: str = DEFAULT_STREAM_TITLE,
+        artist: str = "",
+    ) -> str:
+        """Генерация DIDL-Lite метаданных с длительностью 24 часа.
+
+        Название и исполнитель показываются на дисплее устройства,
+        спецсимволы XML экранируются.
+        """
+        display_title = f"{artist} — {title}" if artist else title
+        logger.info(f"🔊 Метаданные потока: {display_title}")
+        return META_INFO.format(
+            url=escape(uri),
+            title=escape(display_title),
+            artist=escape(artist),
+        )
 
     async def print_status(self) -> None:
         """Вывод текущего состояния устройства."""

@@ -135,6 +135,9 @@ async def test_new_track_sent_to_stream_server(fast_sleep):
     assert send_call.kwargs["radio"] is False
     # Свежий трек (прогресс ниже порога) стартует с начала
     assert send_call.kwargs["start_position"] == pytest.approx(0.0)
+    # Метаданные трека уезжают на стрим сервер для дисплея Ruark
+    assert send_call.kwargs["title"] == "title"
+    assert send_call.kwargs["artist"] == "artist"
 
 
 async def test_radio_track_sent_with_radio_flag(fast_sleep):

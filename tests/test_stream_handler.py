@@ -152,3 +152,17 @@ def test_insert_start_position_zero_keeps_params_unchanged():
     assert _insert_start_position(FFMPEG_MP3_PARAMS, 0.0) == list(
         FFMPEG_MP3_PARAMS
     )
+
+
+async def test_play_stream_passes_metadata_to_ruark():
+    handler, ruark = make_handler()
+    set_params(handler, ["sleep", "30"])
+
+    await handler.play_stream(
+        "http://example/track", title="Песня", artist="Артист"
+    )
+
+    call = ruark.set_av_transport_uri.call_args
+    assert call.kwargs["title"] == "Песня"
+    assert call.kwargs["artist"] == "Артист"
+    await handler.stop_ffmpeg()
