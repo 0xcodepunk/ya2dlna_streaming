@@ -587,7 +587,10 @@ class MainStreamManager:
             logger.info("🔁 Возвращаем громкость Ruark")
             await self._ruark_controls.set_volume(self._ruark_volume)
 
-            for _ in range(30):
+            # Радио буферизует HLS дольше, чем стартует трек, —
+            # ждём дольше, чтобы не перепривязывать поток зря
+            attempts = 80 if track.type == "FmRadio" else 30
+            for _ in range(attempts):
                 if await self._ruark_controls.is_playing():
                     logger.info("▶️ Ruark начал играть")
                     await self._station_controls.fade_out_alice_volume()
