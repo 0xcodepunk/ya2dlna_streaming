@@ -94,3 +94,36 @@ FFMPEG_AAC_PARAMS = [
     "2M",
     "pipe:1",
 ]
+
+# Параметры для lossless: перепаковка FLAC из MP4-контейнера
+# в чистый FLAC-поток без перекодирования
+FFMPEG_FLAC_PARAMS = [
+    "ffmpeg",
+    "-rw_timeout",
+    "30000000",
+    "-reconnect",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_delay_max",
+    "1",
+    "-thread_queue_size",
+    "4096",
+    "-i",
+    "{yandex_url}",
+    "-vn",
+    "-map_metadata",
+    "-1",
+    "-c:a",
+    "copy",
+    "-f",
+    "flac",
+    "pipe:1",
+]
+
+# MIME-типы потоков по кодеку
+STREAM_MIME_TYPES = {
+    "mp3": "audio/mpeg",
+    "flac": "audio/flac",
+    "aac": "audio/aac",
+}

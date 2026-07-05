@@ -150,7 +150,7 @@ class YandexStationControls:
             volume = state.get("state", {}).get("volume")
             if volume is None:
                 return None
-            logger.info(
+            logger.debug(
                 f"🔊 Получение текущего уровня громкости Алиcы: {volume}"
             )
             return float(volume)

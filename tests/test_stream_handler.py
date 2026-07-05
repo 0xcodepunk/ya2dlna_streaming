@@ -191,3 +191,27 @@ async def test_new_client_displaces_previous_stream():
 
     await second.aclose()
     await handler.stop_ffmpeg()
+
+
+async def test_flac_codec_selects_flac_params_and_mime():
+    handler, ruark = make_handler()
+
+    await handler.play_stream(
+        "http://example/track.flac", codec="flac", title="Т", artist="А"
+    )
+
+    assert handler.stream_media_type == "audio/flac"
+    call = ruark.set_av_transport_uri.call_args
+    assert call.kwargs["mime_type"] == "audio/flac"
+    await handler.stop_ffmpeg()
+
+
+def test_ffmpeg_params_for_flac_remux_without_reencode():
+    from dlna_stream_server.handlers.constants import FFMPEG_FLAC_PARAMS
+
+    handler, _ = make_handler()
+    params = handler._get_ffmpeg_params(codec="flac")
+
+    assert params is FFMPEG_FLAC_PARAMS
+    assert "copy" in params
+    assert "flac" in params

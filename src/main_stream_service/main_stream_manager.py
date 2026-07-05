@@ -346,23 +346,24 @@ class MainStreamManager:
             f"🔁 Ресинк стрима ({reason}): позиция {track.progress:.0f}s"
         )
         resync_started = time.monotonic()
-        track_url = await self._yandex_music_api.get_file_info(
+        source = await self._yandex_music_api.get_track_source(
             track_id=track.id,
             quality=settings.stream_quality,
         )
-        if not track_url:
+        if not source:
             logger.warning("⚠️ Не удалось получить URL трека для ресинка")
             return
 
-        ctx.track_url = track_url
+        ctx.track_url = source.url
         ctx.last_track = track
         ctx.last_stream_sent_at = time.monotonic()
         await self._send_track_to_stream_server(
-            track_url,
+            source.url,
             radio=False,
             start_position=track.progress,
             title=track.title,
             artist=track.artist,
+            codec=source.codec,
         )
         logger.info(
             f"⏱ Ресинк выполнен за "
@@ -381,14 +382,17 @@ class MainStreamManager:
             return
 
         switch_started = time.monotonic()
+        codec = "mp3"
         if track.type == "FmRadio":
             ctx.track_url = await self._station_controls.get_radio_url()
             logger.info(f"🎵 URL радиостанции: {ctx.track_url}")
         else:
-            ctx.track_url = await self._yandex_music_api.get_file_info(
+            source = await self._yandex_music_api.get_track_source(
                 track_id=track.id,
                 quality=settings.stream_quality,
             )
+            ctx.track_url = source.url if source else None
+            codec = source.codec if source else "mp3"
         resolve_seconds = time.monotonic() - switch_started
 
         if ctx.track_url:
@@ -410,6 +414,7 @@ class MainStreamManager:
                 start_position=start_position,
                 title=track.title,
                 artist=track.artist,
+                codec=codec,
             )
             logger.info(
                 f"⏱ Переключение на {track.id}: ссылка "
@@ -552,6 +557,7 @@ class MainStreamManager:
         start_position: float = 0.0,
         title: str = "",
         artist: str = "",
+        codec: str = "mp3",
     ):
         """Отправляет ссылку на трек на стрим сервер.
 
@@ -561,6 +567,7 @@ class MainStreamManager:
             start_position (float): Позиция старта в секундах.
             title (str): Название трека для дисплея Ruark.
             artist (str): Исполнитель для дисплея Ruark.
+            codec (str): Кодек источника: mp3 или flac.
         """
         try:
             timeout = aiohttp.ClientTimeout(total=15)
@@ -575,6 +582,7 @@ class MainStreamManager:
                         "start_position": f"{start_position:.1f}",
                         "title": title,
                         "artist": artist,
+                        "codec": codec,
                     },
                 ) as resp:
                     response = await resp.json()

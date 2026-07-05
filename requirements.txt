@@ -5,5 +5,5 @@ pydantic==2.10.6
 pydantic-settings==2.8.1
 upnpclient==1.0.3
 uvicorn==0.34.0
-yandex-music==2.2.0
+yandex-music==3.0.0
 zeroconf==0.146.1
