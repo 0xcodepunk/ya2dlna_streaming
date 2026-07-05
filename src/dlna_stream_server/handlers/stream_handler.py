@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.config.settings import settings
+from ruark_audio_system.constants import DEFAULT_STREAM_TITLE
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
 from .constants import (
@@ -44,6 +45,8 @@ class StreamHandler:
         self._ruark_controls = ruark_controls
         self._ruark_lock = asyncio.Lock()
         self._ffmpeg = FfmpegSupervisor(on_restarted=self._reattach_ruark)
+        # Метаданные текущего потока для дисплея Ruark: (title, artist)
+        self._now_playing: tuple[str, str] = (DEFAULT_STREAM_TITLE, "")
 
     async def execute_with_lock(
         self,
@@ -80,8 +83,12 @@ class StreamHandler:
     async def _reattach_ruark(self, radio: bool) -> None:
         """Заново привязывает Ruark к локальному стриму и запускает play."""
         track_url = self._local_stream_url(radio)
+        title, artist = self._now_playing
         await self.execute_with_lock(
-            self._ruark_controls.set_av_transport_uri, track_url
+            self._ruark_controls.set_av_transport_uri,
+            track_url,
+            title=title,
+            artist=artist,
         )
         await self.execute_with_lock(self._ruark_controls.play)
 
@@ -251,8 +258,11 @@ class StreamHandler:
         yandex_url: str,
         radio: bool = False,
         start_position: float = 0.0,
+        title: str = "",
+        artist: str = "",
     ) -> None:
         """Запускает потоковую трансляцию и передает её на Ruark."""
+        self._now_playing = (title or DEFAULT_STREAM_TITLE, artist)
         logger.info(f"🎶 Начинаем потоковое воспроизведение {yandex_url}")
 
         # Сбрасываем счетчик попыток и флаги для нового потока

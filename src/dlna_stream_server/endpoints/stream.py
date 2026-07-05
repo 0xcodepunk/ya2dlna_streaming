@@ -26,10 +26,14 @@ async def _handle_stream_task(
     task_id: str,
     radio: bool = False,
     start_position: float = 0.0,
+    title: str = "",
+    artist: str = "",
 ):
     """Обработчик задачи потока с логированием ошибок."""
     try:
-        await stream_handler.play_stream(yandex_url, radio, start_position)
+        await stream_handler.play_stream(
+            yandex_url, radio, start_position, title, artist
+        )
         logger.info(f"✅ Задача потока {task_id} завершена успешно")
     except Exception as e:
         logger.exception(f"❌ Ошибка в задаче потока {task_id}: {e}")
@@ -44,11 +48,14 @@ async def set_stream(
     yandex_url: str,
     radio: bool = False,
     start_position: float = 0.0,
+    title: str = "",
+    artist: str = "",
 ):
     """Принимает URL трека и запускает потоковую передачу на Ruark.
 
-    start_position — позиция старта в секундах для ресинка
-    (повтор, перемотка, продолжение после паузы).
+    start_position — позиция старта в секундах для ресинка (повтор,
+    перемотка, продолжение после паузы); title и artist показываются
+    на дисплее Ruark.
     """
     logger.info(
         f"📥 Запуск нового потока с {yandex_url} "
@@ -73,6 +80,8 @@ async def set_stream(
             task_id,
             radio,
             start_position,
+            title,
+            artist,
         )
     )
     _active_tasks[task_id] = task
