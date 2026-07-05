@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     # Stream settings
     stream_quality: str = "192"
     stream_is_local_file: bool = False
+    # Предпочитать lossless (FLAC), когда он доступен для трека
+    prefer_lossless: bool = True
 
 
 settings = Settings()

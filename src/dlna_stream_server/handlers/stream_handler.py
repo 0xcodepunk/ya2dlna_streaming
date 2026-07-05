@@ -14,8 +14,10 @@ from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
 from .constants import (
     FFMPEG_AAC_PARAMS,
+    FFMPEG_FLAC_PARAMS,
     FFMPEG_LOCAL_MP3_PARAMS,
     FFMPEG_MP3_PARAMS,
+    STREAM_MIME_TYPES,
 )
 from .ffmpeg_supervisor import FfmpegSupervisor
 
@@ -47,9 +49,16 @@ class StreamHandler:
         self._ffmpeg = FfmpegSupervisor(on_restarted=self._reattach_ruark)
         # Метаданные текущего потока для дисплея Ruark: (title, artist)
         self._now_playing: tuple[str, str] = (DEFAULT_STREAM_TITLE, "")
+        # Кодек текущего потока: mp3 | flac | aac (радио)
+        self._stream_codec = "mp3"
         # Поколение клиента: новый слушатель вытесняет предыдущего,
         # иначе два читателя одного pipe рвут поток на куски
         self._client_epoch = 0
+
+    @property
+    def stream_media_type(self) -> str:
+        """MIME-тип текущего потока."""
+        return STREAM_MIME_TYPES[self._stream_codec]
 
     async def execute_with_lock(
         self,
@@ -92,6 +101,7 @@ class StreamHandler:
             track_url,
             title=title,
             artist=artist,
+            mime_type=self.stream_media_type,
         )
         await self.execute_with_lock(self._ruark_controls.play)
 
@@ -104,6 +114,7 @@ class StreamHandler:
         yandex_url: str,
         radio: bool = False,
         start_position: float = 0.0,
+        codec: str = "mp3",
     ) -> None:
         """Готовит источник и запускает потоковую передачу через FFmpeg.
 
@@ -111,6 +122,7 @@ class StreamHandler:
             yandex_url (str): Прямая ссылка на источник потока.
             radio (bool): Режим радио.
             start_position (float): Позиция старта трека в секундах.
+            codec (str): Кодек трека: mp3 или flac (lossless).
         """
         # Очищаем папку от старых MP3 файлов перед запуском нового стрима
         if not radio and settings.stream_is_local_file:
@@ -120,6 +132,7 @@ class StreamHandler:
             # Мастер-плейлист передаётся FFmpeg как есть: вложенные
             # плейлисты привязаны к сессии (hlssid) и должны запрашиваться
             # тем же клиентом, что получил мастер
+            self._stream_codec = "aac"
             params = self._get_ffmpeg_params(codec="aac")
         else:
             yandex_url = (
@@ -127,9 +140,10 @@ class StreamHandler:
                 if settings.stream_is_local_file
                 else yandex_url
             )
+            self._stream_codec = codec if codec == "flac" else "mp3"
             params = _insert_start_position(
                 self._get_ffmpeg_params(
-                    codec="mp3",
+                    codec=self._stream_codec,
                     is_local_file=settings.stream_is_local_file,
                 ),
                 start_position,
@@ -261,7 +275,7 @@ class StreamHandler:
                 )
                 await self.stop_ffmpeg()
 
-        media_type = "audio/mpeg" if not radio else "audio/aac"
+        media_type = self.stream_media_type
 
         logger.info(f"🎧 Отправляем стрим с типом {media_type}")
 
@@ -274,10 +288,13 @@ class StreamHandler:
         start_position: float = 0.0,
         title: str = "",
         artist: str = "",
+        codec: str = "mp3",
     ) -> None:
         """Запускает потоковую трансляцию и передает её на Ruark."""
         self._now_playing = (title or DEFAULT_STREAM_TITLE, artist)
-        logger.info(f"🎶 Начинаем потоковое воспроизведение {yandex_url}")
+        logger.info(
+            f"🎶 Начинаем потоковое воспроизведение [{codec}] {yandex_url}"
+        )
 
         # Сбрасываем счетчик попыток и флаги для нового потока
         self._ffmpeg.reset_restart_state()
@@ -285,7 +302,9 @@ class StreamHandler:
         try:
             play_started = time.monotonic()
             # Запускаем потоковую передачу (быстро, без ожидания)
-            await self.start_ffmpeg_stream(yandex_url, radio, start_position)
+            await self.start_ffmpeg_stream(
+                yandex_url, radio, start_position, codec
+            )
             ffmpeg_seconds = time.monotonic() - play_started
 
             track_url = self._local_stream_url(radio)
@@ -358,6 +377,8 @@ class StreamHandler:
             return (
                 FFMPEG_LOCAL_MP3_PARAMS if is_local_file else FFMPEG_MP3_PARAMS
             )
+        elif codec == "flac":
+            return FFMPEG_FLAC_PARAMS
         elif codec == "aac":
             return FFMPEG_AAC_PARAMS
         else:

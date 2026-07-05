@@ -28,11 +28,12 @@ async def _handle_stream_task(
     start_position: float = 0.0,
     title: str = "",
     artist: str = "",
+    codec: str = "mp3",
 ):
     """Обработчик задачи потока с логированием ошибок."""
     try:
         await stream_handler.play_stream(
-            yandex_url, radio, start_position, title, artist
+            yandex_url, radio, start_position, title, artist, codec
         )
         logger.info(f"✅ Задача потока {task_id} завершена успешно")
     except Exception as e:
@@ -50,6 +51,7 @@ async def set_stream(
     start_position: float = 0.0,
     title: str = "",
     artist: str = "",
+    codec: str = "mp3",
 ):
     """Принимает URL трека и запускает потоковую передачу на Ruark.
 
@@ -82,6 +84,7 @@ async def set_stream(
             start_position,
             title,
             artist,
+            codec,
         )
     )
     _active_tasks[task_id] = task
@@ -101,10 +104,10 @@ async def serve_stream(request: Request, radio: bool = False):
 
 
 @router.head("/live_stream.mp3")
-async def serve_head(radio: bool = False):
+async def serve_head(request: Request, radio: bool = False):
     """Обрабатывает HEAD-запрос для Ruark R5 с корректными заголовками."""
     headers = {
-        "Content-Type": "audio/mpeg" if not radio else "audio/aac",
+        "Content-Type": _get_stream_handler(request).stream_media_type,
         "Accept-Ranges": "bytes",
         "Connection": "keep-alive",
     }

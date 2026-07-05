@@ -55,3 +55,41 @@ async def test_get_file_info_returns_none_without_track():
     client.tracks = AsyncMock(return_value=[])
     api = YandexMusicAPI(client=client)
     assert await api.get_file_info(1) is None
+
+
+async def test_get_track_source_prefers_lossless(monkeypatch):
+    api = make_api([info("mp3", 320, "link-320")])
+    lossless_mock = AsyncMock(return_value="https://cdn/flac-url")
+    monkeypatch.setattr(api, "_get_lossless_url", lossless_mock)
+
+    source = await api.get_track_source("42", quality="320")
+
+    assert source is not None
+    assert source.codec == "flac"
+    assert source.url == "https://cdn/flac-url"
+
+
+async def test_get_track_source_falls_back_to_mp3(monkeypatch):
+    api = make_api([info("mp3", 320, "link-320")])
+    monkeypatch.setattr(api, "_get_lossless_url", AsyncMock(return_value=None))
+
+    source = await api.get_track_source("42", quality="320")
+
+    assert source is not None
+    assert source.codec == "mp3"
+    assert source.url == "link-320"
+
+
+async def test_get_track_source_skips_lossless_when_disabled(monkeypatch):
+    from core.config.settings import settings
+
+    monkeypatch.setattr(settings, "prefer_lossless", False)
+    api = make_api([info("mp3", 320, "link-320")])
+    lossless_mock = AsyncMock(return_value="https://cdn/flac-url")
+    monkeypatch.setattr(api, "_get_lossless_url", lossless_mock)
+
+    source = await api.get_track_source("42", quality="320")
+
+    assert source is not None
+    assert source.codec == "mp3"
+    lossless_mock.assert_not_awaited()

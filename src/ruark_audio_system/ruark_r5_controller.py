@@ -202,10 +202,11 @@ class RuarkR5Controller:
         uri: str,
         title: str = DEFAULT_STREAM_TITLE,
         artist: str = "",
+        mime_type: str = "audio/mpeg",
     ) -> None:
         """Установка нового потока с метаданными для дисплея."""
         metadata = self.generate_metadata_with_fake_duration(
-            uri, title=title, artist=artist
+            uri, title=title, artist=artist, mime_type=mime_type
         )
         await asyncio.to_thread(
             self.av_transport.SetAVTransportURI,
@@ -402,6 +403,7 @@ class RuarkR5Controller:
         uri: str,
         title: str = DEFAULT_STREAM_TITLE,
         artist: str = "",
+        mime_type: str = "audio/mpeg",
     ) -> str:
         """Генерация DIDL-Lite метаданных с длительностью 24 часа.
 
@@ -414,6 +416,7 @@ class RuarkR5Controller:
             url=escape(uri),
             title=escape(display_title),
             artist=escape(artist),
+            mime_type=escape(mime_type),
         )
 
     async def print_status(self) -> None:

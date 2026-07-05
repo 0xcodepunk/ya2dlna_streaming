@@ -8,7 +8,7 @@ from main_stream_service.main_stream_manager import (
     MainStreamManager,
     _CycleContext,
 )
-from main_stream_service.yandex_music_api import YandexMusicAPI
+from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
     RUARK_IDLE_VOLUME,
@@ -86,6 +86,9 @@ def make_ruark(is_playing=True, volume=20):
 def make_manager(station_controls, ruark, track_url="http://track/url"):
     music_api = AsyncMock(spec=YandexMusicAPI)
     music_api.get_file_info.return_value = track_url
+    music_api.get_track_source.return_value = (
+        TrackSource(url=track_url, codec="mp3") if track_url else None
+    )
     ws_client = MagicMock()
 
     # Без событий цикл живёт на heartbeat; передача управления
@@ -127,8 +130,8 @@ async def test_new_track_sent_to_stream_server(fast_sleep):
         manager, until=lambda: manager._send_track_to_stream_server.called
     )
 
-    manager._yandex_music_api.get_file_info.assert_called()
-    call = manager._yandex_music_api.get_file_info.call_args
+    manager._yandex_music_api.get_track_source.assert_called()
+    call = manager._yandex_music_api.get_track_source.call_args
     assert call.kwargs["track_id"] == "42"
     send_call = manager._send_track_to_stream_server.call_args_list[0]
     assert send_call.args[0] == "http://track/url"

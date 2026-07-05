@@ -6,7 +6,7 @@ META_INFO = """<?xml version="1.0" encoding="utf-8"?>
     <dc:title>{title}</dc:title>
     <dc:creator>{artist}</dc:creator>
     <upnp:artist>{artist}</upnp:artist>
-    <res protocolInfo="http-get:*:audio/mpeg:*"
+    <res protocolInfo="http-get:*:{mime_type}:*"
          duration="24:00:00.000">{url}</res>
     <upnp:class>object.item.audioItem.audioBroadcast</upnp:class>
     <upnp:radioCallSign>Yandex Music</upnp:radioCallSign>
