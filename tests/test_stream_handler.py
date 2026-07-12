@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -191,6 +192,40 @@ async def test_new_client_displaces_previous_stream():
 
     await second.aclose()
     await handler.stop_ffmpeg()
+
+
+def test_slow_flac_pacing_logged_as_warning(caplog):
+    """FLAC на ~320 кбит/с — втрое ниже реального времени, WARNING."""
+    handler, _ = make_handler()
+    handler._stream_codec = "flac"
+
+    with caplog.at_level(logging.WARNING):
+        handler._log_stream_pacing(
+            window_bytes=1_200_000,
+            elapsed=30.0,
+            source_wait=25.0,
+            client_wait=1.0,
+        )
+
+    assert any(
+        "ниже реального времени" in record.message for record in caplog.records
+    )
+
+
+def test_healthy_mp3_pacing_stays_quiet(caplog):
+    """Тот же темп ~320 кбит/с для MP3 — норма, без WARNING."""
+    handler, _ = make_handler()
+    handler._stream_codec = "mp3"
+
+    with caplog.at_level(logging.WARNING):
+        handler._log_stream_pacing(
+            window_bytes=1_200_000,
+            elapsed=30.0,
+            source_wait=0.5,
+            client_wait=28.0,
+        )
+
+    assert not caplog.records
 
 
 async def test_radio_declared_as_mpeg_in_didl(fast_sleep):
