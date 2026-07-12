@@ -342,6 +342,7 @@ class FfmpegSupervisor:
                     "error",
                     "failed",
                     "connection",
+                    "reconnect",
                     "broken",
                     "timeout",
                     "invalid data found",

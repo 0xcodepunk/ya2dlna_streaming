@@ -19,6 +19,8 @@ from .constants import (
     FFMPEG_LOCAL_MP3_PARAMS,
     FFMPEG_MP3_PARAMS,
     STREAM_MIME_TYPES,
+    STREAM_RATE_THRESHOLDS_KBPS,
+    STREAM_RATE_WINDOW,
 )
 from .ffmpeg_supervisor import FfmpegSupervisor
 
@@ -157,6 +159,33 @@ class StreamHandler:
 
         await self._ffmpeg.start(yandex_url, params, radio)
 
+    def _log_stream_pacing(
+        self,
+        window_bytes: int,
+        elapsed: float,
+        source_wait: float,
+        client_wait: float,
+    ) -> None:
+        """Логирует темп подачи за окно; ниже реального времени — WARNING.
+
+        Доли ожиданий называют узкое место: источник — CDN/FFmpeg,
+        клиент — сеть до устройства (Wi-Fi Ruark).
+        """
+        if elapsed <= 0:
+            return
+        kbps = window_bytes * 8 / 1000 / elapsed
+        message = (
+            f"📈 Темп подачи: {kbps:.0f} кбит/с за {elapsed:.0f}с "
+            f"({self._stream_codec}); ожидание источника "
+            f"{source_wait / elapsed * 100:.0f}%, "
+            f"ожидание клиента {client_wait / elapsed * 100:.0f}%"
+        )
+        threshold = STREAM_RATE_THRESHOLDS_KBPS.get(self._stream_codec, 0)
+        if kbps < threshold:
+            logger.warning(f"⚠️ Подача ниже реального времени! {message}")
+        else:
+            logger.debug(message)
+
     async def stream_audio(self, radio: bool = False) -> StreamingResponse:
         """Отдаёт потоковый аудио-ответ клиенту.
 
@@ -180,6 +209,11 @@ class StreamHandler:
                 total_bytes_sent = 0
                 serve_started = time.monotonic()
                 first_chunk_sent = False
+                # Окно замера темпа подачи и виновника ожиданий
+                window_started = serve_started
+                window_bytes = 0
+                window_source_wait = 0.0
+                window_client_wait = 0.0
                 while True:
                     if self._client_epoch != client_epoch:
                         logger.info(
@@ -195,6 +229,7 @@ class StreamHandler:
                         )
                         break
 
+                    read_started = time.monotonic()
                     try:
                         chunk = await asyncio.wait_for(
                             stdout.read(4096),
@@ -235,6 +270,7 @@ class StreamHandler:
                             f"{time.monotonic() - serve_started:.2f}с "
                             f"после подключения"
                         )
+                    window_source_wait += time.monotonic() - read_started
                     total_bytes_sent += len(chunk)
                     # Диагностика: логируем прогресс передачи данных
                     if total_bytes_sent % (1024 * 1024) == 0:  # Каждый МБ
@@ -243,7 +279,23 @@ class StreamHandler:
                             f"{total_bytes_sent // 1024 // 1024} МБ"
                         )
 
+                    send_started = time.monotonic()
                     yield chunk
+                    now = time.monotonic()
+                    window_client_wait += now - send_started
+                    window_bytes += len(chunk)
+
+                    if now - window_started >= STREAM_RATE_WINDOW:
+                        self._log_stream_pacing(
+                            window_bytes,
+                            now - window_started,
+                            window_source_wait,
+                            window_client_wait,
+                        )
+                        window_started = now
+                        window_bytes = 0
+                        window_source_wait = 0.0
+                        window_client_wait = 0.0
 
                 # После выхода из цикла логируем завершение FFmpeg
                 if proc.returncode is not None:
