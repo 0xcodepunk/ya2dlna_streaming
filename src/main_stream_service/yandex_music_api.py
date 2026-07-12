@@ -58,9 +58,19 @@ class YandexMusicAPI:
             if lossless_url:
                 return TrackSource(url=lossless_url, codec="flac")
 
-        mp3_url = await self.get_file_info(track_id, quality=quality)
+        # Только MP3: без фильтра «лучшим по битрейту» может оказаться
+        # AAC, а его копирование в MP3-контейнер роняет FFmpeg
+        mp3_url = await self.get_file_info(
+            track_id, quality=quality, codecs="mp3"
+        )
         if mp3_url:
             return TrackSource(url=mp3_url, codec="mp3")
+
+        # У трека нет MP3 вовсе — разово спасаемся lossless
+        if not settings.prefer_lossless:
+            lossless_url = await self._get_lossless_url(track_id)
+            if lossless_url:
+                return TrackSource(url=lossless_url, codec="flac")
         return None
 
     async def _get_lossless_url(self, track_id: str | int) -> str | None:
