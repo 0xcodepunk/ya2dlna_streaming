@@ -18,6 +18,9 @@ from .constants import (
     FFMPEG_FLAC_PARAMS,
     FFMPEG_LOCAL_MP3_PARAMS,
     FFMPEG_MP3_PARAMS,
+    RUARK_COMMAND_ATTEMPTS,
+    RUARK_RECONNECT_COOLDOWN,
+    RUARK_RETRY_DELAY,
     STREAM_MIME_TYPES,
     STREAM_RATE_THRESHOLDS_KBPS,
     STREAM_RATE_WINDOW,
@@ -57,6 +60,11 @@ class StreamHandler:
         # Поколение клиента: новый слушатель вытесняет предыдущего,
         # иначе два читателя одного pipe рвут поток на куски
         self._client_epoch = 0
+        # Время последнего переподключения к Ruark (защита от частых
+        # сканов). Отрицательный старт: monotonic() отсчитывается от
+        # загрузки хоста, и на свежем Raspberry ноль съел бы первую
+        # попытку восстановления
+        self._last_reconnect_at = -RUARK_RECONNECT_COOLDOWN
 
     @property
     def stream_media_type(self) -> str:
@@ -74,9 +82,16 @@ class StreamHandler:
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        """Выполняет вызов UPnP-команды в Ruark с блокировкой."""
+        """Выполняет вызов UPnP-команды в Ruark с блокировкой.
+
+        Между попытками восстанавливает связь с устройством: Ruark мог
+        спать при старте сервера или сменить адрес.
+
+        Raises:
+            Exception: Ошибка последней попытки, если команда не прошла.
+        """
         async with self._ruark_lock:
-            for attempt in range(3):
+            for attempt in range(1, RUARK_COMMAND_ATTEMPTS + 1):
                 try:
                     logger.debug(
                         f"Выполняем {func.__name__} с аргументами "
@@ -88,9 +103,30 @@ class StreamHandler:
                 except Exception as e:
                     logger.warning(
                         f"⚠️ Ошибка при {func.__name__}, "
-                        f"попытка {attempt + 1}: {e}"
+                        f"попытка {attempt}: {e}"
                     )
-                    await asyncio.sleep(1)
+                    if attempt == RUARK_COMMAND_ATTEMPTS:
+                        raise
+                    await self._recover_ruark()
+                    await asyncio.sleep(RUARK_RETRY_DELAY)
+
+    async def _recover_ruark(self) -> None:
+        """Переподключается к Ruark, не чаще RUARK_RECONNECT_COOLDOWN.
+
+        Поиск устройства дорогой (SSDP-скан), поэтому серия неудачных
+        команд подряд не превращается в серию сканов сети.
+        """
+        now = time.monotonic()
+        if now - self._last_reconnect_at < RUARK_RECONNECT_COOLDOWN:
+            return
+        self._last_reconnect_at = now
+        try:
+            if await self._ruark_controls.reconnect():
+                logger.info("✅ Связь с Ruark восстановлена")
+            else:
+                logger.warning("⚠️ Ruark не найден при переподключении")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось переподключиться к Ruark: {e}")
 
     def _local_stream_url(self, radio: bool) -> str:
         """Строит URL локального стрима для Ruark."""

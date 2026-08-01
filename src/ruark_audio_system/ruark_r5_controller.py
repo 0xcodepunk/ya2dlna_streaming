@@ -105,6 +105,31 @@ class RuarkR5Controller:
         )
         return False
 
+    async def reconnect(self, attempts: int = 1, delay: float = 0.0) -> bool:
+        """Ищет устройство заново, сбросив прошлую привязку.
+
+        Нужен, когда Ruark не отвечал при старте (спал) или сменил
+        адрес: connect() без сброса вернул бы старое состояние.
+
+        Args:
+            attempts (int): Количество попыток поиска.
+            delay (float): Пауза между попытками в секундах.
+        Returns:
+            bool: True, если устройство найдено.
+        """
+        logger.info(f"🔌 Переподключаемся к {self.device_name}")
+        self._forget_device()
+        return await self.connect(attempts=attempts, delay=delay)
+
+    def _forget_device(self) -> None:
+        """Сбрасывает найденное устройство и его сервисы."""
+        self.device = None
+        self.ip = None
+        self.services = {}
+        self._av_transport = None
+        self._connection_manager = None
+        self._rendering_control = None
+
     def refresh_device(self) -> None:
         """Обновление устройства.
 

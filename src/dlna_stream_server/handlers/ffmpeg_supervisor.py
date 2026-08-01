@@ -2,6 +2,8 @@ import asyncio
 from logging import getLogger
 from typing import Awaitable, Callable, Sequence
 
+from .constants import FFMPEG_KILL_TIMEOUT, FFMPEG_TERM_TIMEOUT
+
 logger = getLogger(__name__)
 
 # Колбэк вызывается после успешного перезапуска потока с флагом radio
@@ -276,7 +278,9 @@ class FfmpegSupervisor:
             logger.info(f"📤 SIGTERM отправлен старому FFmpeg PID: {proc.pid}")
 
             try:
-                await asyncio.wait_for(proc.wait(), timeout=10)
+                await asyncio.wait_for(
+                    proc.wait(), timeout=FFMPEG_TERM_TIMEOUT
+                )
                 logger.info(
                     f"✅ Старый FFmpeg завершился, код: "
                     f"{proc.returncode}, PID: {proc.pid}"
@@ -287,8 +291,14 @@ class FfmpegSupervisor:
                     f"вовремя, принудительное завершение"
                 )
                 proc.kill()
+                # Каналы зависшего процесса никто не вычитывает: FFmpeg
+                # стоит на записи в переполненный pipe, а asyncio не
+                # дожидается EOF и не возвращает wait() даже после kill
+                self._close_pipes(proc)
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=1)
+                    await asyncio.wait_for(
+                        proc.wait(), timeout=FFMPEG_KILL_TIMEOUT
+                    )
                     logger.info(
                         f"✅ Старый FFmpeg принудительно завершён, "
                         f"код: {proc.returncode}"
@@ -309,6 +319,24 @@ class FfmpegSupervisor:
                 f"❌ Ошибка при фоновом завершении FFmpeg "
                 f"PID {proc.pid}: {e}"
             )
+
+    @staticmethod
+    def _close_pipes(proc: asyncio.subprocess.Process) -> None:
+        """Закрывает stdout/stderr процесса, разблокируя его и wait().
+
+        Технический шов: публичного доступа к транспорту у
+        asyncio.subprocess.Process нет, а без закрытия каналов
+        приостановленный (переполненный) поток никогда не отдаст EOF —
+        wait() не возвращается даже после kill(), процесс остаётся
+        зомби, а транспорт течёт.
+        """
+        transport = getattr(proc, "_transport", None)
+        if transport is None:
+            return
+        try:
+            transport.close()
+        except Exception as e:
+            logger.debug(f"Не удалось закрыть каналы FFmpeg: {e}")
 
     async def _log_stderr(self, proc: asyncio.subprocess.Process) -> None:
         """Логирование stderr FFmpeg процесса.

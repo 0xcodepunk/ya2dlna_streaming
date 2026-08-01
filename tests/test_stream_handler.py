@@ -6,11 +6,15 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
+from dlna_stream_server.handlers import ffmpeg_supervisor
+from dlna_stream_server.handlers import stream_handler as stream_handler_module
 from dlna_stream_server.handlers.constants import FFMPEG_MP3_PARAMS
+from dlna_stream_server.handlers.ffmpeg_supervisor import FfmpegSupervisor
 from dlna_stream_server.handlers.stream_handler import (
     StreamHandler,
     _insert_start_position,
 )
+from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
 # Настоящий sleep сохраняется до подмены в фикстуре fast_sleep
@@ -260,6 +264,125 @@ async def test_flac_codec_selects_flac_params_and_mime():
     call = ruark.set_av_transport_uri.call_args
     assert call.kwargs["mime_type"] == "audio/flac"
     await handler.stop_ffmpeg()
+
+
+async def test_terminate_closes_pipes_of_unread_process(monkeypatch, caplog):
+    """Процесс без читателя pipe гасится, без зависшего wait().
+
+    Переполненные stdout/stderr не отдают EOF: без закрытия каналов
+    wait() не возвращается даже после kill(), процесс остаётся зомби.
+    """
+    monkeypatch.setattr(ffmpeg_supervisor, "FFMPEG_TERM_TIMEOUT", 0.5)
+    supervisor = FfmpegSupervisor()
+    # Игнорирует SIGTERM и заливает оба канала, которые никто не читает
+    await supervisor.start(
+        "http://example/track",
+        ["sh", "-c", "trap '' TERM; yes DATADATA >&2 & yes DATADATA"],
+    )
+    proc = supervisor.process
+    await REAL_SLEEP(0.5)
+
+    started = time.monotonic()
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait_for(supervisor.stop(), timeout=30)
+
+    assert time.monotonic() - started < 3
+    assert proc.returncode is not None
+    assert not [
+        record for record in caplog.records if record.levelno >= logging.ERROR
+    ]
+
+
+async def test_terminate_keeps_graceful_stop_for_healthy_process():
+    """Живому FFmpeg дают доиграть завершение, а не расстреливают каналы.
+
+    Процесс закрывается по SIGTERM не мгновенно: закрытие каналов до
+    таймаута обернулось бы SIGKILL и кодом -9.
+    """
+    supervisor = FfmpegSupervisor()
+    await supervisor.start(
+        "http://example/track",
+        [
+            "sh",
+            "-c",
+            "trap 'sleep 0.3; exit 0' TERM; sleep 30 >/dev/null 2>&1 & wait",
+        ],
+    )
+    proc = supervisor.process
+    # Ждём установки обработчика сигнала в запущенном процессе
+    await REAL_SLEEP(0.3)
+
+    await supervisor.stop()
+
+    assert proc.returncode == 0
+
+
+async def test_old_client_closes_without_touching_new_process():
+    """Клиент снятого процесса завершается сам и не глушит новый поток."""
+    handler, _ = make_handler()
+    set_params(handler, ["sh", "-c", "while :; do printf A; sleep 0.05; done"])
+    await handler.start_ffmpeg_stream("http://example/one")
+    first = (await handler.stream_audio()).body_iterator
+    assert await read_chunk(first)
+
+    await handler.start_ffmpeg_stream("http://example/two")
+    new_process = get_process(handler)
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(first.__anext__(), timeout=10)
+    assert get_process(handler) is new_process
+    await handler.stop_ffmpeg()
+
+
+async def test_execute_with_lock_reconnects_before_retry(fast_sleep):
+    """Потерянный Ruark ищется заново, команда повторяется успешно."""
+    handler, ruark = make_handler()
+    ruark.play.side_effect = [RuarkDeviceNotFoundError("нет устройства"), None]
+    ruark.reconnect.return_value = True
+
+    await handler.execute_with_lock(ruark.play)
+
+    ruark.reconnect.assert_awaited_once()
+    assert ruark.play.await_count == 2
+
+
+async def test_first_recovery_ignores_cooldown_after_boot(
+    fast_sleep, monkeypatch
+):
+    """Малый monotonic() сразу после загрузки не блокирует восстановление."""
+    handler, ruark = make_handler()
+    ruark.play.side_effect = [RuarkDeviceNotFoundError("нет устройства"), None]
+    ruark.reconnect.return_value = True
+    monkeypatch.setattr(stream_handler_module.time, "monotonic", lambda: 10.0)
+
+    await handler.execute_with_lock(ruark.play)
+
+    ruark.reconnect.assert_awaited_once()
+
+
+async def test_execute_with_lock_raises_after_all_attempts(fast_sleep):
+    """Недостижимый Ruark — ошибка наружу, а не молчаливый успех."""
+    handler, ruark = make_handler()
+    ruark.play.side_effect = RuarkDeviceNotFoundError("нет устройства")
+    ruark.reconnect.return_value = False
+
+    with pytest.raises(RuarkDeviceNotFoundError):
+        await handler.execute_with_lock(ruark.play)
+
+
+async def test_play_stream_stops_ffmpeg_when_ruark_unreachable(fast_sleep):
+    """Провал привязки Ruark гасит FFmpeg вместо холостого потока."""
+    handler, ruark = make_handler()
+    set_params(handler, ["sleep", "30"])
+    ruark.set_av_transport_uri.side_effect = RuarkDeviceNotFoundError(
+        "нет устройства"
+    )
+    ruark.reconnect.return_value = False
+
+    with pytest.raises(RuarkDeviceNotFoundError):
+        await handler.play_stream("http://example/track")
+
+    assert get_process(handler) is None
 
 
 def test_ffmpeg_params_for_flac_remux_without_reencode():

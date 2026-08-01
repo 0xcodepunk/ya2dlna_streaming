@@ -139,6 +139,16 @@ STREAM_RATE_THRESHOLDS_KBPS = {
     "aac": 90,
 }
 
+# Завершение процесса FFmpeg: сколько ждать после SIGTERM и SIGKILL
+FFMPEG_TERM_TIMEOUT = 5.0
+FFMPEG_KILL_TIMEOUT = 2.0
+
+# Команды UPnP к Ruark: число попыток, пауза между ними и минимальный
+# интервал между переподключениями (поиск устройства — дорогой)
+RUARK_COMMAND_ATTEMPTS = 3
+RUARK_RETRY_DELAY = 1.0
+RUARK_RECONNECT_COOLDOWN = 30.0
+
 # MIME-типы для protocolInfo в DIDL-метаданных привязки Ruark.
 # Ресурс, объявленный как audio/aac, Ruark качает, но не воспроизводит —
 # ADTS-поток радио играет только под вывеской audio/mpeg
