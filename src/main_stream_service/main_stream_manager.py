@@ -18,6 +18,7 @@ from yandex_station.constants import (
     RUARK_IDLE_VOLUME,
     SILENCE_CHECK_INTERVAL,
     SILENCE_RESEND_GRACE,
+    SILENT_RESEND_LIMIT,
     STREAM_POLL_INTERVAL,
     STREAMING_FAILURE_ANNOUNCE_AFTER,
     STREAMING_FAILURE_STREAK_RESET,
@@ -33,6 +34,7 @@ logger = getLogger(__name__)
 
 # Фразы голосовых уведомлений об ошибках (озвучивает станция)
 RUARK_MISSING_PHRASE = "Стрим не запустился: не вижу Руарк в сети"
+RUARK_SILENT_PHRASE = "Руарк не отвечает, возвращаю звук на станцию"
 STREAM_BROKEN_PHRASE = (
     "Стрим сломался и сам не восстанавливается, загляни в логи"
 )
@@ -57,6 +59,8 @@ class _CycleContext:
     last_stream_sent_at: float = 0.0
     last_silence_check_at: float = 0.0
     silent_checks: int = 0
+    # Пересылки потока подряд, после которых Ruark так и не заиграл
+    silent_resends: int = 0
 
 
 class MainStreamManager:
@@ -320,6 +324,9 @@ class MainStreamManager:
         if time.monotonic() - ctx.last_stream_sent_at < SILENCE_RESEND_GRACE:
             return
         if await self._ruark_controls.is_playing():
+            ctx.silent_resends = 0
+            return
+        if await self._register_silent_resend(ctx):
             return
 
         logger.info("🔁 Возобновляем воспроизведение радио")
@@ -395,6 +402,7 @@ class MainStreamManager:
 
         if await self._ruark_controls.is_playing():
             ctx.silent_checks = 0
+            ctx.silent_resends = 0
             return
 
         ctx.silent_checks += 1
@@ -407,12 +415,61 @@ class MainStreamManager:
                 "🔌 Ruark выключен пользователем — останавливаем стриминг, "
                 "звук возвращается на станцию"
             )
-            # stop() отменяет и задачу цикла, поэтому запускается отдельно
-            self._shutdown_task = asyncio.create_task(self.stop())
+            self._schedule_shutdown()
+            return
+
+        if await self._register_silent_resend(ctx):
             return
 
         logger.warning("⚠️ Станция играет, а Ruark молчит — пересылаем поток")
         await self._resend_current_track(track, ctx, "страховка от тишины")
+
+    async def _register_silent_resend(self, ctx: "_CycleContext") -> bool:
+        """Учитывает пересылку из-за тишины, останавливая стриминг на лимите.
+
+        Пересылки подряд без звука означают, что Ruark поток не
+        подхватывает (потерян в сети, занят другим источником): вечно
+        слать одно и то же бессмысленно, звук возвращается на станцию.
+
+        Args:
+            ctx (_CycleContext): Состояние цикла со счётчиком пересылок.
+        Returns:
+            bool: True, если лимит исчерпан и стриминг остановлен.
+        """
+        if self._is_shutting_down():
+            return True
+
+        ctx.silent_resends += 1
+        if ctx.silent_resends <= SILENT_RESEND_LIMIT:
+            return False
+
+        logger.error(
+            f"❌ Ruark не заиграл после {SILENT_RESEND_LIMIT} пересылок "
+            f"подряд — останавливаем стриминг, звук возвращается на станцию"
+        )
+        # Станция замьючена стримом — вернуть звук, иначе объявление
+        # не услышать
+        await self._safe_stop_step(self._station_controls.unmute)
+        await self._announce_error(RUARK_SILENT_PHRASE)
+        self._schedule_shutdown()
+        return True
+
+    def _is_shutting_down(self) -> bool:
+        """Проверяет, что остановка стриминга уже запущена."""
+        return (
+            self._shutdown_task is not None and not self._shutdown_task.done()
+        )
+
+    def _schedule_shutdown(self) -> None:
+        """Запускает остановку стриминга отдельной задачей.
+
+        stop() отменяет и задачу цикла, поэтому вызывать её из самого
+        цикла нельзя. Повторный запуск отсекается: отмена задач
+        доходит не мгновенно, а цикл успевает сделать ещё виток.
+        """
+        if self._is_shutting_down():
+            return
+        self._shutdown_task = asyncio.create_task(self.stop())
 
     async def _is_ruark_powered_off(self) -> bool:
         """Проверяет, выключено ли питание Ruark.

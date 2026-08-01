@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +13,7 @@ from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
     RUARK_IDLE_VOLUME,
+    SILENT_RESEND_LIMIT,
     STREAM_POLL_INTERVAL,
     TRACK_SOURCE_TTL,
 )
@@ -433,6 +435,101 @@ async def test_playing_ruark_does_not_trigger_resend(fast_sleep, monkeypatch):
 
     # Только первоначальный свитч, страховка молчит
     assert send.call_count == 1
+
+
+async def test_silent_ruark_stops_streaming_after_resend_limit(
+    fast_sleep, monkeypatch
+):
+    """Пересылки без звука не длятся вечно — стриминг останавливается."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_CHECK_INTERVAL", 0.0
+    )
+    track = make_track(progress=50.0)
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark(is_playing=False))
+    manager._stop_stream_on_stream_server = AsyncMock()
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(
+        manager, until=lambda: not manager._stream_state_running
+    )
+    if manager._shutdown_task:
+        await manager._shutdown_task
+
+    assert manager._stream_state_running is False
+    # Первоначальный свитч плюс лимит пересылок-страховок
+    assert send.call_count == SILENT_RESEND_LIMIT + 1
+    station.say.assert_called()
+
+
+async def test_silent_ruark_stops_streaming_once(fast_sleep, monkeypatch):
+    """Витки цикла после отсечки не запускают вторую остановку."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_CHECK_INTERVAL", 0.0
+    )
+    track = make_track(progress=50.0)
+    station = make_station_controls(track)
+    manager = make_manager(station, make_ruark(is_playing=False))
+    manager._stop_stream_on_stream_server = AsyncMock()
+    stop_calls = 0
+    real_stop = manager.stop
+
+    async def counting_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        await REAL_SLEEP(0.05)
+        await real_stop()
+
+    manager.stop = counting_stop
+
+    await drive_streaming(
+        manager,
+        until=lambda: False,
+        timeout=0.3,
+    )
+    if manager._shutdown_task:
+        await manager._shutdown_task
+
+    assert stop_calls == 1
+    assert station.say.call_count == 1
+
+
+async def test_playing_ruark_resets_silent_resend_streak(
+    fast_sleep, monkeypatch
+):
+    """Заигравший Ruark обнуляет серию — стриминг не останавливается."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_CHECK_INTERVAL", 0.0
+    )
+    track = make_track(progress=50.0)
+    station = make_station_controls(track)
+    ruark = make_ruark()
+    # Тишина, пересылка, снова звук — и так по кругу
+    states = itertools.cycle([False, False, True])
+
+    async def next_state(*args, **kwargs):
+        return next(states)
+
+    ruark.is_playing.side_effect = next_state
+    manager = make_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: manager._shutdown_task is not None,
+        timeout=0.5,
+    )
+
+    assert manager._shutdown_task is None
+    station.say.assert_not_called()
 
 
 async def test_powered_off_ruark_stops_streaming(fast_sleep, monkeypatch):
