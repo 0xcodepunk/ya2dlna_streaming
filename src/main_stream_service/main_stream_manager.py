@@ -16,6 +16,7 @@ from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     PROGRESS_JUMP_THRESHOLD,
     RUARK_IDLE_VOLUME,
+    RUARK_MIN_START_VOLUME,
     SILENCE_CHECK_INTERVAL,
     SILENCE_RESEND_GRACE,
     SILENT_RESEND_LIMIT,
@@ -61,6 +62,9 @@ class _CycleContext:
     silent_checks: int = 0
     # Пересылки потока подряд, после которых Ruark так и не заиграл
     silent_resends: int = 0
+    # Громкость, уже возвращённая Ruark после речи Алисы: защита от
+    # переустановки одного и того же уровня каждую итерацию цикла
+    restored_volume: int | None = None
 
 
 class MainStreamManager:
@@ -150,9 +154,12 @@ class MainStreamManager:
         await self._remember_ruark_volume()
         await self._safe_stop_step(self._ruark_controls.stop)
         await self._safe_stop_step(self._stop_stream_on_stream_server)
-        await self._safe_stop_step(
-            self._ruark_controls.set_volume, self._ruark_volume
-        )
+        # Нулевой снапшот на устройство не возвращаем: следующий сеанс
+        # начался бы с выкрученной в тишину колонки
+        if self._ruark_volume > RUARK_IDLE_VOLUME:
+            await self._safe_stop_step(
+                self._ruark_controls.set_volume, self._ruark_volume
+            )
         await self._safe_stop_step(self._ruark_controls.turn_power_off)
         await self._station_controls.unmute()
         # Остановка WebSocket-клиента
@@ -256,7 +263,10 @@ class MainStreamManager:
             ctx.volume_set_count += 1
             ctx.speak_count += 1
 
-            self._ruark_volume = await self._ruark_controls.get_volume()
+            self._remember_ruark_volume_level(
+                await self._ruark_controls.get_volume()
+            )
+            ctx.restored_volume = None
             await self._ruark_controls.set_volume(RUARK_IDLE_VOLUME)
 
             if current_volume == 0:
@@ -642,7 +652,7 @@ class MainStreamManager:
         """Возвращает громкость Ruark после речи Алисы."""
         if ctx.speak_count > 0 and track.playing:
             logger.info("🔁 Возвращаем громкость Ruark")
-            await self._ruark_controls.set_volume(self._ruark_volume)
+            await self._restore_ruark_volume(ctx)
 
             # Радио буферизует HLS дольше, чем стартует трек, —
             # ждём дольше, чтобы не перепривязывать поток зря
@@ -680,7 +690,21 @@ class MainStreamManager:
                 ctx.speak_count = 0
 
         if ctx.speak_count > 0 and not track.playing:
-            await self._ruark_controls.set_volume(self._ruark_volume)
+            await self._restore_ruark_volume(ctx)
+
+    async def _restore_ruark_volume(self, ctx: "_CycleContext") -> None:
+        """Возвращает Ruark запомненную громкость не более одного раза.
+
+        На паузе speak_count не сбрасывается, и без этой защиты цикл
+        слал бы устройству один и тот же уровень каждые полсекунды.
+
+        Args:
+            ctx (_CycleContext): Состояние цикла с уже возвращённым уровнем.
+        """
+        if ctx.restored_volume == self._ruark_volume:
+            return
+        await self._ruark_controls.set_volume(self._ruark_volume)
+        ctx.restored_volume = self._ruark_volume
 
     async def _fade_alice_if_playing(self, track: Track) -> None:
         """Плавно глушит Алису, пока трек или радио играют на Ruark."""
@@ -751,19 +775,37 @@ class MainStreamManager:
         except Exception as e:
             logger.warning(f"⚠️ Не удалось озвучить ошибку: {e}")
 
+    def _remember_ruark_volume_level(self, volume: int) -> None:
+        """Запоминает громкость Ruark, отбрасывая тишину.
+
+        Уровень не выше приглушения — не выбор пользователя, а след
+        речи Алисы или выключенной колонки. Запомнив его, система
+        разносила ноль дальше: на устройство, в файл и в следующий
+        сеанс, который стартовал в полной тишине.
+
+        Args:
+            volume (int): Прочитанная с устройства громкость.
+        """
+        if volume > RUARK_IDLE_VOLUME:
+            self._ruark_volume = volume
+
     async def _remember_ruark_volume(self):
         """Запоминает пользовательскую громкость Ruark для нового сеанса."""
         try:
-            current_volume = await self._ruark_controls.get_volume()
-            # Уровень не выше приглушения — Ruark задакан речью Алисы,
-            # пользовательской громкостью остаётся сохранённый снапшот
-            if current_volume > RUARK_IDLE_VOLUME:
-                self._ruark_volume = current_volume
+            self._remember_ruark_volume_level(
+                await self._ruark_controls.get_volume()
+            )
         except Exception as e:
             logger.warning(
                 f"⚠️ Не удалось прочитать громкость Ruark, "
                 f"сохраняем последнюю известную: {e}"
             )
+        if self._ruark_volume <= RUARK_IDLE_VOLUME:
+            logger.info(
+                "🔇 Громкость Ruark на тишине — сохранённый уровень "
+                "прошлого сеанса оставлен без изменений"
+            )
+            return
         self._volume_store.save(self._ruark_volume)
 
     async def _prepare_devices(self):
@@ -777,7 +819,7 @@ class MainStreamManager:
             await self._ruark_controls.turn_power_on()
 
         saved_volume = self._volume_store.load()
-        if saved_volume is not None:
+        if saved_volume is not None and saved_volume > RUARK_IDLE_VOLUME:
             # Восстанавливаем громкость прошлого сеанса
             await self._ruark_controls.set_volume(saved_volume)
             self._ruark_volume = saved_volume
@@ -786,7 +828,21 @@ class MainStreamManager:
                 f"{saved_volume}"
             )
         else:
-            self._ruark_volume = await self._ruark_controls.get_volume()
+            # Сохранённая тишина игнорируется: файл мог быть отравлен
+            # нулём в прошлом сеансе
+            self._remember_ruark_volume_level(
+                await self._ruark_controls.get_volume()
+            )
+
+        if self._ruark_volume <= RUARK_IDLE_VOLUME:
+            # Ни снапшота, ни звука на колонке — поднимаем до слышимого
+            # минимума, иначе стрим стартует в полной тишине
+            self._ruark_volume = RUARK_MIN_START_VOLUME
+            await self._ruark_controls.set_volume(RUARK_MIN_START_VOLUME)
+            logger.info(
+                f"🔊 Ruark стоял на тишине — стартовая громкость "
+                f"поднята до {RUARK_MIN_START_VOLUME}"
+            )
 
     async def _send_track_to_stream_server(
         self,

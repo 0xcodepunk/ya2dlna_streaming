@@ -2,6 +2,11 @@ ALICE_ACTIVE_STATES = {"LISTENING", "SPEAKING", "BUSY"}
 
 RUARK_IDLE_VOLUME = 2
 
+# Громкость Ruark на старте сеанса, если устройство стоит на тишине:
+# ноль на колонке — не пользовательский выбор, а след приглушения,
+# и стрим не должен начинаться в полной тишине
+RUARK_MIN_START_VOLUME = 15
+
 FADE_TIME = 1
 
 SOCKET_RECONNECT_DELAY = 1
