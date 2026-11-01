@@ -12,6 +12,9 @@ logs/
 cache/
 .cache/
 
+# Секреты
+.env
+
 # Системные файлы
 .DS_Store
 .env.local

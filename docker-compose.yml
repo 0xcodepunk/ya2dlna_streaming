@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   api_service:
     build: .
@@ -14,6 +20,7 @@ services:
     environment:
       - DOCKER_ENV=true
     restart: unless-stopped
+    logging: *default-logging
     network_mode: "host"
 
   dlna_server:
@@ -29,4 +36,5 @@ services:
     environment:
       - DOCKER_ENV=true
     restart: unless-stopped
+    logging: *default-logging
     network_mode: "host"
