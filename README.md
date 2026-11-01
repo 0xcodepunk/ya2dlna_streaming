@@ -113,6 +113,8 @@ docker compose up -d
 
 > Сервисы работают с `network_mode: host` — DLNA-устройство должно быть в той же локальной сети, а `APP_LOCAL_SERVER_HOST` указывать на адрес хоста, доступный устройству.
 
+> `.env` в образ не копируется: compose передаёт настройки в контейнеры через `env_file`, поэтому после правки `.env` достаточно `docker compose up -d`, пересборка не нужна. Docker-логи каждого сервиса ограничены тремя файлами по 10 МБ.
+
 ## ⚙️ CI/CD
 
 Каждый pull request проходит проверки на GitHub-hosted раннере (`uv sync --frozen`): `black`, `isort`, `flake8`, `mypy` (strict-уровень) и `pytest`. Пуш в `main` дополнительно запускает деплой на self-hosted раннере: сборка образов, перезапуск `docker compose` и healthcheck обоих сервисов. Пуш, затрагивающий только Markdown, `assets/` и лицензию, пайплайн не запускает и играющий стрим не перезапускает. Конфигурация — в [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
