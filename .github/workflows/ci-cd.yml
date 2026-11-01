@@ -6,6 +6,12 @@ name: CI/CD
 on:
   push:
     branches: [main]
+    # Пуш только с документацией, картинками и лицензией не перезапускает
+    # играющий стрим на Pi; для PR проверки идут всегда
+    paths-ignore:
+      - "**.md"
+      - "assets/**"
+      - "LICENSE*"
   pull_request:
 
 concurrency:

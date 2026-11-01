@@ -115,7 +115,7 @@ docker compose up -d
 
 ## ⚙️ CI/CD
 
-Каждый pull request проходит проверки на GitHub-hosted раннере (`uv sync --frozen`): `black`, `isort`, `flake8`, `mypy` (strict-уровень) и `pytest`. Пуш в `main` дополнительно запускает деплой на self-hosted раннере: сборка образов, перезапуск `docker compose` и healthcheck обоих сервисов. Конфигурация — в [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
+Каждый pull request проходит проверки на GitHub-hosted раннере (`uv sync --frozen`): `black`, `isort`, `flake8`, `mypy` (strict-уровень) и `pytest`. Пуш в `main` дополнительно запускает деплой на self-hosted раннере: сборка образов, перезапуск `docker compose` и healthcheck обоих сервисов. Пуш, затрагивающий только Markdown, `assets/` и лицензию, пайплайн не запускает и играющий стрим не перезапускает. Конфигурация — в [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
 
 ## 💻 Локальная разработка
 
