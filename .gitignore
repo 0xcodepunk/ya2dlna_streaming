@@ -150,7 +150,7 @@ cache/
 .vscode/
 
 #  Temporary files
-temp*
+temp/
 **/temp*
 
 # PyInstaller
@@ -166,3 +166,9 @@ ya2dlna_streaming.spec.pyz
 # logo
 assets/ft_logo.png
 assets/logo_social.png
+
+# docs
+docs/
+
+# инструкции для агентов — только локально
+CLAUDE.md
