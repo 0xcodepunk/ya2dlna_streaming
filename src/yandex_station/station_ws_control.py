@@ -294,7 +294,7 @@ class YandexStationClient:
 
                     if self.websocket and not self.websocket.closed:
                         await self.websocket.ping()
-                        logger.info(
+                        logger.debug(
                             "📡 Отправлен ping-frame через aiohttp.WebSocket"
                         )
 
@@ -478,7 +478,8 @@ class YandexStationClient:
                 logger.debug("⏱ Очередь пуста, ждём новые команды...")
                 continue
 
-            if command == "stop":
+            # Строка в очереди бывает одна — сигнал остановки "stop"
+            if isinstance(command, str):
                 break
 
             #  Блокировка гарантирует,
@@ -492,7 +493,10 @@ class YandexStationClient:
                     await asyncio.wait_for(
                         self.websocket.send_json(command), timeout=5
                     )
-                    logger.info(f"✅ Команда отправлена на станцию: {command}")
+                    logger.debug(
+                        f"✅ Команда {command['id']} отправлена на станцию: "
+                        f"{command['payload']}"
+                    )
                 except asyncio.TimeoutError:
                     logger.warning(
                         "⚠️ Таймаут при отправке команды через WebSocket"
@@ -526,11 +530,11 @@ class YandexStationClient:
         }
 
         await self.command_queue.put(command_payload)
-        logger.info(f"✅ Команда {request_id} добавлена в очередь")
+        logger.debug(f"✅ Команда {request_id} добавлена в очередь")
 
         try:
             response = await asyncio.wait_for(future, timeout=10)
-            logger.info(f"✅ Ответ на команду {request_id} получен")
+            logger.debug(f"✅ Ответ на команду {request_id} получен")
             return response
         except asyncio.TimeoutError:
             logger.error(
