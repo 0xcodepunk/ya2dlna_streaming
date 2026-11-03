@@ -187,6 +187,11 @@ class YandexStationControls:
             logger.error(f"❌ Ошибка при получении громкости: {e}")
             return None
 
+    @property
+    def working_volume(self) -> float:
+        """Рабочий уровень громкости, который возвращает unmute()."""
+        return self._volume
+
     async def set_default_volume(self):
         """Установка громкости по умолчанию."""
         logger.info("🔊 Установка громкости по умолчанию")

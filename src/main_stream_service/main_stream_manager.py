@@ -16,10 +16,13 @@ from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     PROGRESS_JUMP_THRESHOLD,
     RUARK_IDLE_VOLUME,
+    RUARK_MAX_VOLUME,
     RUARK_MIN_START_VOLUME,
+    RUARK_VOLUME_PER_STATION_STEP,
     SILENCE_CHECK_INTERVAL,
     SILENCE_RESEND_GRACE,
     SILENT_RESEND_LIMIT,
+    STATION_VOLUME_STEP,
     STREAM_POLL_INTERVAL,
     STREAMING_FAILURE_ANNOUNCE_AFTER,
     STREAMING_FAILURE_STREAK_RESET,
@@ -63,7 +66,8 @@ class _CycleContext:
     # Пересылки потока подряд, после которых Ruark так и не заиграл
     silent_resends: int = 0
     # Громкость, уже возвращённая Ruark после речи Алисы: защита от
-    # переустановки одного и того же уровня каждую итерацию цикла
+    # переустановки одного и того же уровня каждую итерацию цикла.
+    # None до первого возврата — окно переноса голосовой громкости
     restored_volume: int | None = None
 
 
@@ -650,6 +654,14 @@ class MainStreamManager:
         self, track: Track, ctx: "_CycleContext"
     ) -> None:
         """Возвращает громкость Ruark после речи Алисы."""
+        # Перенос один раз за реплику: до первого возврата громкости
+        if (
+            ctx.speak_count > 0
+            and ctx.restored_volume is None
+            and settings.voice_volume_to_ruark
+        ):
+            await self._move_voice_volume_to_ruark()
+
         if ctx.speak_count > 0 and track.playing:
             logger.info("🔁 Возвращаем громкость Ruark")
             await self._restore_ruark_volume(ctx)
@@ -691,6 +703,33 @@ class MainStreamManager:
 
         if ctx.speak_count > 0 and not track.playing:
             await self._restore_ruark_volume(ctx)
+
+    async def _move_voice_volume_to_ruark(self) -> None:
+        """Переносит на Ruark прибавку станции сверх рабочего уровня.
+
+        Рабочий уровень станции выставляет unmute перед репликой
+        Алисы. Понижение громкости («тише») не переносится.
+        """
+        current = await self._station_controls.get_volume()
+        if current is None:
+            return
+        base = self._station_controls.working_volume
+        steps = round((current - base) / STATION_VOLUME_STEP)
+        if steps < 1:
+            return
+
+        volume = min(
+            self._ruark_volume + steps * RUARK_VOLUME_PER_STATION_STEP,
+            RUARK_MAX_VOLUME,
+        )
+        logger.info(
+            f"🔊 Голосовая громкость: станция {base} ➝ {current} "
+            f"(шагов: {steps}), Ruark {self._ruark_volume} ➝ {volume}"
+        )
+        self._ruark_volume = volume
+        # Сразу, без плавного снижения: иначе гашение после реплики
+        # приняло бы прибавку за новый рабочий уровень станции
+        await self._station_controls.set_volume(base)
 
     async def _restore_ruark_volume(self, ctx: "_CycleContext") -> None:
         """Возвращает Ruark запомненную громкость не более одного раза.
