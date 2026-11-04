@@ -14,6 +14,7 @@ from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
     RUARK_IDLE_VOLUME,
+    RUARK_MIN_VOICE_VOLUME,
     RUARK_VOLUME_PER_STATION_STEP,
     SILENT_RESEND_LIMIT,
     STREAM_POLL_INTERVAL,
@@ -777,25 +778,40 @@ async def test_stop_survives_unreachable_ruark():
     station.stop_ws_client.assert_called()
 
 
-def make_voice_station(alice_states, volume_by_state, track=None):
+def make_voice_station(
+    alice_states, volume_by_state, track=None, accepted=None
+):
     """Фейк станции, громкость которой зависит от состояния Алисы.
 
-    Рабочий уровень станции, который возвращает unmute, — 0.5.
+    Рабочий уровень станции, который возвращает unmute, — 0.5. После
+    unmute и до смены состояния станция сообщает принятый уровень:
+    accepted или, если он не задан, рабочий.
     """
     station = make_station_controls(
         track or make_track(), alice_states=alice_states
     )
-    current = {"state": alice_states[0]}
+    current = {"state": alice_states[0], "accepted": None}
     next_state = station.get_alice_state.side_effect
 
     async def tracked_state():
-        current["state"] = await next_state()
-        return current["state"]
+        state = await next_state()
+        if state != current["state"]:
+            current["accepted"] = None
+        current["state"] = state
+        return state
+
+    async def unmute():
+        current["accepted"] = (
+            station.working_volume if accepted is None else accepted
+        )
 
     async def volume():
+        if current["accepted"] is not None:
+            return current["accepted"]
         return volume_by_state[current["state"]]
 
     station.get_alice_state.side_effect = tracked_state
+    station.unmute.side_effect = unmute
     station.get_volume.side_effect = volume
     return station
 
@@ -1049,3 +1065,224 @@ async def test_volume_rise_after_fade_is_not_command(fast_sleep):
         ((20,),),
     ]
     station.set_volume.assert_not_awaited()
+
+
+async def test_voice_volume_down_moves_to_ruark(fast_sleep):
+    """«Алиса, тише» во время трека убавляет Ruark, а не станцию."""
+    # Unmute перед репликой вернул станции 0.5, к IDLE пришло 0.4 —
+    # один шаг «тише»
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.4},
+    )
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20 - RUARK_VOLUME_PER_STATION_STEP,),),
+    ]
+    # Станция сразу, без плавного снижения, возвращается на свой уровень
+    station.set_volume.assert_awaited_once_with(0.5)
+
+
+async def test_late_voice_volume_down_moved_after_fade(fast_sleep):
+    """«Тише», пришедшее после первой проверки, убавляет Ruark."""
+    # К первой IDLE-итерации станция ещё на рабочем уровне, а гашение
+    # через секунду читает уже 0.3 и, как настоящее, принимает его
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.5},
+    )
+    fades = []
+
+    async def late_fade():
+        fades.append(1)
+        if len(fades) > 1:
+            return None
+        station.working_volume = 0.3
+        return 0.3
+
+    station.fade_out_alice_volume.side_effect = late_fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: len(fades) > 0)
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+        ((20 - 2 * RUARK_VOLUME_PER_STATION_STEP,),),
+    ]
+    # Голос Алисы не тише: рабочий уровень прежний
+    assert station.working_volume == 0.5
+
+
+async def test_voice_volume_down_stops_at_ruark_minimum(fast_sleep):
+    """«Громкость 0» опускает Ruark до нижней границы, а не в тишину."""
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.0},
+    )
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list[-1] == ((RUARK_MIN_VOICE_VOLUME,),)
+    station.set_volume.assert_awaited_once_with(0.5)
+
+
+async def test_voice_volume_down_never_raises_quiet_ruark(fast_sleep):
+    """Ruark ниже границы «тише» не поднимает до неё."""
+    # Ручкой Ruark выкручен до 4 — тише границы, но не приглушение
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.4},
+    )
+    ruark = make_ruark(volume=4)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((4,),),
+    ]
+
+
+async def test_station_clamped_level_is_not_quieter(fast_sleep):
+    """Уровень, зажатый станцией при unmute, не убавляет Ruark."""
+    # Unmute отправил 0.5, станция приняла 0.4 и на нём же ответила,
+    # команды «тише» не было
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.4},
+        accepted=0.4,
+    )
+
+    async def fade():
+        station.working_volume = 0.4
+        return 0.4
+
+    station.fade_out_alice_volume.side_effect = fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+    ]
+    station.set_volume.assert_not_awaited()
+
+
+async def test_voice_volume_down_disabled_lowers_station_only(
+    fast_sleep, monkeypatch
+):
+    """Ключ выключен — «тише» убавляет рабочий уровень станции."""
+    monkeypatch.setattr(settings, "voice_volume_to_ruark", False)
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.4},
+    )
+
+    async def fade():
+        station.working_volume = 0.4
+        return 0.4
+
+    station.fade_out_alice_volume.side_effect = fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+    ]
+    station.set_volume.assert_not_awaited()
+    # Голос Алисы тише, как до переноса
+    assert station.working_volume == 0.4
+
+
+async def test_raise_from_button_zero_is_not_quieter(fast_sleep):
+    """«Громче» со станции, опущенной кнопкой до нуля, не убавляет Ruark."""
+    # На паузе станция стоит на рабочем уровне, её опустили кнопкой
+    # до нуля: unmute ничего не отправляет, и «громче» даёт 0.1
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.1},
+        track=make_track(playing=False),
+    )
+    station.unmute.side_effect = None
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.2)
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+    ]
+    station.set_volume.assert_not_awaited()
+
+
+async def test_volume_change_on_pause_is_not_voice_command(fast_sleep):
+    """Громкость, изменённая на паузе не голосом, не уходит на Ruark."""
+    # «Алиса, пауза»: гашения нет, станция ждёт продолжения на рабочем
+    # уровне. Кнопкой её убавили до 0.2 и продолжили из приложения
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.5},
+    )
+    ruark = make_ruark(volume=20)
+    paused, playing = make_track(playing=False), make_track()
+    by_state = station.get_volume.side_effect
+
+    async def resumed_from_app():
+        return playing if ruark.set_volume.await_count > 1 else paused
+
+    async def knob_on_pause():
+        if ruark.set_volume.await_count > 1:
+            return 0.2
+        return await by_state()
+
+    async def fade():
+        station.working_volume = 0.2
+        return 0.2
+
+    station.get_current_track.side_effect = resumed_from_app
+    station.get_volume.side_effect = knob_on_pause
+    station.fade_out_alice_volume.side_effect = fade
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+    ]
+    # Голос Алисы остаётся таким, каким его сделали кнопкой
+    assert station.working_volume == 0.2
