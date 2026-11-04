@@ -286,9 +286,10 @@ class MainStreamManager:
             await self._ruark_controls.set_volume(RUARK_IDLE_VOLUME)
 
             working = self._station_controls.working_volume
-            # Ответ на unmute несёт прежнюю громкость станции, поэтому
-            # после отправки база — отправленный рабочий уровень
-            if current_volume == 0 and await self._station_controls.unmute():
+            # Станцию, заглушённую стримом, unmute возвращает на рабочий
+            # уровень — он и база: и ответ на unmute, и чтение сразу
+            # после прерванного гашения несут прежнюю громкость
+            if await self._station_controls.unmute():
                 current_volume = working
             ctx.reply_volume = (
                 working if current_volume is None else current_volume
@@ -699,8 +700,12 @@ class MainStreamManager:
             for _ in range(attempts):
                 if await self._ruark_controls.is_playing():
                     logger.info("▶️ Ruark начал играть")
-                    await self._fade_station_after_reply(ctx, voice, moved)
-                    ctx.speak_count = 0
+                    break
+                # Новая реплика не ждёт Ruark: гашение сразу уступит ей
+                # станцию, а поток проверит следующий возврат громкости
+                alice_state = await self._station_controls.get_alice_state()
+                if alice_state in ALICE_ACTIVE_STATES:
+                    logger.info("🎙 Алиса снова слушает — Ruark не ждём")
                     break
                 await asyncio.sleep(0.1)
             else:
@@ -725,8 +730,8 @@ class MainStreamManager:
                     logger.warning(
                         "⚠️ Нет сохранённого URL трека для перезапуска"
                     )
-                await self._fade_station_after_reply(ctx, voice, moved)
-                ctx.speak_count = 0
+            await self._fade_station_after_reply(ctx, voice, moved)
+            ctx.speak_count = 0
 
         if ctx.speak_count > 0 and not track.playing:
             await self._restore_ruark_volume(ctx)

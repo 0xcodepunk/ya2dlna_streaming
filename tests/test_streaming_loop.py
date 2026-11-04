@@ -1184,6 +1184,55 @@ async def test_voice_volume_down_never_raises_quiet_ruark(fast_sleep):
     ]
 
 
+async def test_reply_after_cut_fade_counts_from_working_volume(fast_sleep):
+    """Реплика после прерванного гашения считается от рабочего уровня."""
+    # Гашение прервано и увело станцию в ноль, но чтение ещё помнит
+    # ступень 0.3; unmute возвращает рабочие 0.5, «громче» даёт 0.6
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.3, "IDLE": 0.6},
+    )
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    station.unmute.assert_awaited()
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20 + RUARK_VOLUME_PER_STATION_STEP,),),
+    ]
+    station.set_volume.assert_awaited_once_with(0.5)
+
+
+async def test_new_reply_interrupts_wait_for_ruark(fast_sleep):
+    """Новая реплика не ждёт Ruark и не перезапускает трек."""
+    # Ruark после реплики не подтверждает воспроизведение, а слушатель
+    # уже снова сказал «Алиса»
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE", "LISTENING"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.5},
+    )
+    ruark = make_ruark(is_playing=False, volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager, until=lambda: ruark.set_volume.call_count >= 3
+    )
+
+    # Новая реплика сразу приглушила Ruark
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+        ((RUARK_IDLE_VOLUME,),),
+    ]
+    # Трек отправлен один раз — при переключении, без перезапуска
+    assert manager._send_track_to_stream_server.call_count == 1
+
+
 async def test_voice_volume_down_disabled_lowers_station_only(
     fast_sleep, monkeypatch
 ):
