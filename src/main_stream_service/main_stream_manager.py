@@ -225,6 +225,10 @@ class MainStreamManager:
 
             while self._stream_state_running:
                 track = await self._station_controls.get_current_track()
+                # Время снимка прогресса: итерация с ожиданием Ruark
+                # и гашением идёт дольше порога скачка, и метка в её
+                # конце выдала бы честное проигрывание за перемотку
+                progress_at = time.monotonic()
                 if track is None:
                     logger.warning(
                         "⚠️ Нет данных о треке, пропускаем итерацию"
@@ -244,7 +248,7 @@ class MainStreamManager:
 
                 self._log_current_track(track, alice_state, ctx)
                 ctx.last_track_progress = track.progress
-                ctx.last_progress_at = time.monotonic()
+                ctx.last_progress_at = progress_at
                 ctx.last_track_playing = track.playing
                 ctx.last_alice_state = alice_state
                 # Новое сообщение станции будит цикл сразу,

@@ -380,6 +380,40 @@ async def test_resync_detects_real_jump_with_fresh_snapshot():
     assert send.call_args.kwargs["start_position"] == pytest.approx(120.0)
 
 
+async def test_long_reply_iteration_does_not_resync(fast_sleep, monkeypatch):
+    """Итерация с гашением дольше порога скачка не пересылает поток."""
+    # Ожидание Ruark и гашение после реплики заняли 7 с, а станция
+    # за это время честно проиграла те же 7 с трека
+    clock = [1000.0]
+    fake_time = MagicMock()
+    fake_time.monotonic.side_effect = lambda: clock[0]
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.time", fake_time
+    )
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.5},
+    )
+    fades = []
+
+    async def track_by_clock():
+        return make_track(progress=10.0 + clock[0] - 1000.0)
+
+    async def slow_fade():
+        fades.append(1)
+        if len(fades) == 1:
+            clock[0] += 7.0
+
+    station.get_current_track.side_effect = track_by_clock
+    station.fade_out_alice_volume.side_effect = slow_fade
+    manager = make_voice_manager(station, make_ruark())
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.2)
+
+    # Только отправка нового трека, без ресинка «разрыва прогресса»
+    assert manager._send_track_to_stream_server.call_count == 1
+
+
 async def test_stream_start_midtrack_continues_from_position(fast_sleep):
     """Стрим включён посреди трека — Ruark продолжает с позиции станции."""
     track = make_track(progress=120.0)
