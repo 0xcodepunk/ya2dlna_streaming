@@ -708,7 +708,8 @@ class MainStreamManager:
         """Переносит на Ruark прибавку станции сверх рабочего уровня.
 
         Рабочий уровень станции выставляет unmute перед репликой
-        Алисы. Понижение громкости («тише») не переносится.
+        Алисы. Понижение громкости («тише») и подъём с нулевого
+        рабочего уровня не переносятся.
         """
         current = await self._station_controls.get_volume()
         if current is None:
@@ -716,6 +717,14 @@ class MainStreamManager:
         base = self._station_controls.working_volume
         steps = round((current - base) / STATION_VOLUME_STEP)
         if steps < 1:
+            return
+        # Ноль достался от замьюченной станции: unmute возвращает тишину,
+        # и подъём — это слушатель возвращает голос Алисе, а не «громче»
+        if base <= 0:
+            logger.info(
+                f"🔇 Рабочий уровень станции нулевой — подъём до "
+                f"{current} не переносится на Ruark"
+            )
             return
 
         volume = min(

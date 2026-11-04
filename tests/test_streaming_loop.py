@@ -848,6 +848,30 @@ async def test_voice_volume_capped_at_ruark_maximum(fast_sleep):
     assert ruark.set_volume.call_args_list[-1] == ((100,),)
 
 
+async def test_raise_from_zero_working_volume_is_not_louder(fast_sleep):
+    """При нулевом рабочем уровне подъём станции не уходит на Ruark."""
+    # Сеанс начался с замьюченной станции: unmute возвращает ноль,
+    # Алису не слышно, и слушатель сам поднимает станцию до 0.6
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.6},
+    )
+    station.working_volume = 0.0
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+    ]
+    station.set_volume.assert_not_awaited()
+
+
 async def test_voice_volume_disabled_keeps_old_behavior(
     fast_sleep, monkeypatch
 ):
