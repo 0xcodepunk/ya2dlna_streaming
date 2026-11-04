@@ -192,6 +192,11 @@ class YandexStationControls:
         """Рабочий уровень громкости, который возвращает unmute()."""
         return self._volume
 
+    @working_volume.setter
+    def working_volume(self, volume: float) -> None:
+        """Задаёт рабочий уровень громкости."""
+        self._volume = volume
+
     async def set_default_volume(self):
         """Установка громкости по умолчанию."""
         logger.info("🔊 Установка громкости по умолчанию")
@@ -257,10 +262,14 @@ class YandexStationControls:
 
     async def fade_out_alice_volume(
         self, min_volume: float = 0.0, step: float = 0.1, delay: float = 0.3
-    ):
-        """Плавное уменьшение громкости Алисы в несколько шагов."""
+    ) -> float | None:
+        """Плавное уменьшение громкости Алисы в несколько шагов.
+
+        Returns:
+            float | None: Громкость перед гашением или None без гашения.
+        """
         if self._was_muted:
-            return
+            return None
         logger.info(f"🎧 Ждём {FADE_TIME}s перед fade out громкости")
         await asyncio.sleep(FADE_TIME)
         start_volume = await self.get_volume()
@@ -268,7 +277,7 @@ class YandexStationControls:
             logger.warning(
                 "⚠️ Громкость станции неизвестна, fade out пропущен"
             )
-            return
+            return None
         self._volume = start_volume
         volume = round(start_volume - (start_volume % step), 1)
 
@@ -290,3 +299,4 @@ class YandexStationControls:
             logger.info("✅ Плавное снижение громкости Алисы завершено")
         except Exception as e:
             logger.error(f"❌ Ошибка при снижении громкости Алисы: {e}")
+        return start_volume

@@ -76,6 +76,8 @@ def make_station_controls(track=None, alice_states=("IDLE",), tracks=None):
 
     controls.get_volume.return_value = 0.5
     controls.working_volume = 0.5
+    # Гашение пропущено: станция уже заглушена
+    controls.fade_out_alice_volume.return_value = None
     controls.get_radio_url.return_value = "http://radio/master.m3u8"
     return controls
 
@@ -831,6 +833,38 @@ async def test_voice_volume_up_moves_to_ruark(fast_sleep):
     station.set_volume.assert_awaited_once_with(0.5)
 
 
+async def test_late_voice_volume_moved_after_fade(fast_sleep):
+    """Прибавка, пришедшая после первой проверки, уходит на Ruark."""
+    # К первой IDLE-итерации станция ещё на рабочем уровне, а гашение
+    # через секунду читает уже 0.7 и, как настоящее, принимает его
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.5},
+    )
+    fades = []
+
+    async def late_fade():
+        fades.append(1)
+        if len(fades) > 1:
+            return None
+        station.working_volume = 0.7
+        return 0.7
+
+    station.fade_out_alice_volume.side_effect = late_fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: len(fades) > 0)
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+        ((20 + 2 * RUARK_VOLUME_PER_STATION_STEP,),),
+    ]
+    # Голос Алисы не громчает: рабочий уровень прежний
+    assert station.working_volume == 0.5
+
+
 async def test_voice_volume_capped_at_ruark_maximum(fast_sleep):
     """Прибавка не выводит Ruark за верхнюю границу громкости."""
     station = make_voice_station(
@@ -881,6 +915,8 @@ async def test_voice_volume_disabled_keeps_old_behavior(
         alice_states=("IDLE", "LISTENING", "IDLE"),
         volume_by_state={"LISTENING": 0.0, "IDLE": 0.7},
     )
+    # Гашение тоже видит прибавку — поздний перенос не срабатывает
+    station.fade_out_alice_volume.return_value = 0.7
     ruark = make_ruark(volume=20)
     manager = make_voice_manager(station, ruark)
 

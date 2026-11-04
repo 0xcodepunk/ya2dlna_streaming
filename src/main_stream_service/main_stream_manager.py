@@ -654,13 +654,16 @@ class MainStreamManager:
         self, track: Track, ctx: "_CycleContext"
     ) -> None:
         """Возвращает громкость Ruark после речи Алисы."""
+        moved = False
         # Перенос один раз за реплику: до первого возврата громкости
         if (
             ctx.speak_count > 0
             and ctx.restored_volume is None
             and settings.voice_volume_to_ruark
         ):
-            await self._move_voice_volume_to_ruark()
+            moved = await self._move_voice_volume_to_ruark()
+        # Станция может сообщить прибавку позже — её увидит гашение
+        check_late = settings.voice_volume_to_ruark and not moved
 
         if ctx.speak_count > 0 and track.playing:
             logger.info("🔁 Возвращаем громкость Ruark")
@@ -672,7 +675,7 @@ class MainStreamManager:
             for _ in range(attempts):
                 if await self._ruark_controls.is_playing():
                     logger.info("▶️ Ruark начал играть")
-                    await self._station_controls.fade_out_alice_volume()
+                    await self._fade_station_after_reply(ctx, check_late)
                     ctx.speak_count = 0
                     break
                 await asyncio.sleep(0.1)
@@ -698,26 +701,32 @@ class MainStreamManager:
                     logger.warning(
                         "⚠️ Нет сохранённого URL трека для перезапуска"
                     )
-                await self._station_controls.fade_out_alice_volume()
+                await self._fade_station_after_reply(ctx, check_late)
                 ctx.speak_count = 0
 
         if ctx.speak_count > 0 and not track.playing:
             await self._restore_ruark_volume(ctx)
 
-    async def _move_voice_volume_to_ruark(self) -> None:
-        """Переносит на Ruark прибавку станции сверх рабочего уровня.
+    def _louder_ruark_volume(
+        self, current: float | None, base: float
+    ) -> int | None:
+        """Громкость Ruark с прибавкой станции сверх рабочего уровня.
 
         Рабочий уровень станции выставляет unmute перед репликой
         Алисы. Понижение громкости («тише») и подъём с нулевого
         рабочего уровня не переносятся.
+
+        Args:
+            current (float | None): Прочитанная громкость станции.
+            base (float): Рабочий уровень станции.
+        Returns:
+            int | None: Новая громкость Ruark или None без команды.
         """
-        current = await self._station_controls.get_volume()
         if current is None:
-            return
-        base = self._station_controls.working_volume
+            return None
         steps = round((current - base) / STATION_VOLUME_STEP)
         if steps < 1:
-            return
+            return None
         # Ноль достался от замьюченной станции: unmute возвращает тишину,
         # и подъём — это слушатель возвращает голос Алисе, а не «громче»
         if base <= 0:
@@ -725,7 +734,7 @@ class MainStreamManager:
                 f"🔇 Рабочий уровень станции нулевой — подъём до "
                 f"{current} не переносится на Ruark"
             )
-            return
+            return None
 
         volume = min(
             self._ruark_volume + steps * RUARK_VOLUME_PER_STATION_STEP,
@@ -735,10 +744,46 @@ class MainStreamManager:
             f"🔊 Голосовая громкость: станция {base} ➝ {current} "
             f"(шагов: {steps}), Ruark {self._ruark_volume} ➝ {volume}"
         )
+        return volume
+
+    async def _move_voice_volume_to_ruark(self) -> bool:
+        """Переносит на Ruark прибавку станции в первой IDLE-итерации.
+
+        Returns:
+            bool: True, если прибавка перенесена.
+        """
+        base = self._station_controls.working_volume
+        volume = self._louder_ruark_volume(
+            await self._station_controls.get_volume(), base
+        )
+        if volume is None:
+            return False
         self._ruark_volume = volume
         # Сразу, без плавного снижения: иначе гашение после реплики
         # приняло бы прибавку за новый рабочий уровень станции
         await self._station_controls.set_volume(base)
+        return True
+
+    async def _fade_station_after_reply(
+        self, ctx: "_CycleContext", check_late: bool
+    ) -> None:
+        """Гасит станцию после реплики и переносит запоздавшую прибавку.
+
+        Args:
+            ctx (_CycleContext): Состояние цикла с возвращённой громкостью.
+            check_late (bool): Искать прибавку в громкости перед гашением.
+        """
+        base = self._station_controls.working_volume
+        start = await self._station_controls.fade_out_alice_volume()
+        if not check_late:
+            return
+        volume = self._louder_ruark_volume(start, base)
+        if volume is None:
+            return
+        # Гашение приняло прибавку за рабочий уровень — возвращаем прежний
+        self._station_controls.working_volume = base
+        self._ruark_volume = volume
+        await self._restore_ruark_volume(ctx)
 
     async def _restore_ruark_volume(self, ctx: "_CycleContext") -> None:
         """Возвращает Ruark запомненную громкость не более одного раза.
