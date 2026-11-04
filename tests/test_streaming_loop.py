@@ -778,41 +778,29 @@ async def test_stop_survives_unreachable_ruark():
     station.stop_ws_client.assert_called()
 
 
-def make_voice_station(
-    alice_states, volume_by_state, track=None, accepted=None
-):
+def make_voice_station(alice_states, volume_by_state, track=None):
     """Фейк станции, громкость которой зависит от состояния Алисы.
 
-    Рабочий уровень станции, который возвращает unmute, — 0.5. После
-    unmute и до смены состояния станция сообщает принятый уровень:
-    accepted или, если он не задан, рабочий.
+    Рабочий уровень станции, который возвращает unmute, — 0.5. Как
+    настоящая станция, ответ на unmute сообщает прежнюю громкость:
+    новый уровень виден только в следующих состояниях.
     """
     station = make_station_controls(
         track or make_track(), alice_states=alice_states
     )
-    current = {"state": alice_states[0], "accepted": None}
+    current = {"state": alice_states[0]}
     next_state = station.get_alice_state.side_effect
 
     async def tracked_state():
-        state = await next_state()
-        if state != current["state"]:
-            current["accepted"] = None
-        current["state"] = state
-        return state
-
-    async def unmute():
-        current["accepted"] = (
-            station.working_volume if accepted is None else accepted
-        )
+        current["state"] = await next_state()
+        return current["state"]
 
     async def volume():
-        if current["accepted"] is not None:
-            return current["accepted"]
         return volume_by_state[current["state"]]
 
     station.get_alice_state.side_effect = tracked_state
-    station.unmute.side_effect = unmute
     station.get_volume.side_effect = volume
+    station.unmute.return_value = True
     return station
 
 
@@ -1162,36 +1150,6 @@ async def test_voice_volume_down_never_raises_quiet_ruark(fast_sleep):
     ]
 
 
-async def test_station_clamped_level_is_not_quieter(fast_sleep):
-    """Уровень, зажатый станцией при unmute, не убавляет Ruark."""
-    # Unmute отправил 0.5, станция приняла 0.4 и на нём же ответила,
-    # команды «тише» не было
-    station = make_voice_station(
-        alice_states=("IDLE", "LISTENING", "IDLE"),
-        volume_by_state={"LISTENING": 0.0, "IDLE": 0.4},
-        accepted=0.4,
-    )
-
-    async def fade():
-        station.working_volume = 0.4
-        return 0.4
-
-    station.fade_out_alice_volume.side_effect = fade
-    ruark = make_ruark(volume=20)
-    manager = make_voice_manager(station, ruark)
-
-    await drive_streaming(
-        manager,
-        until=lambda: station.fade_out_alice_volume.await_count > 0,
-    )
-
-    assert ruark.set_volume.call_args_list == [
-        ((RUARK_IDLE_VOLUME,),),
-        ((20,),),
-    ]
-    station.set_volume.assert_not_awaited()
-
-
 async def test_voice_volume_down_disabled_lowers_station_only(
     fast_sleep, monkeypatch
 ):
@@ -1233,7 +1191,7 @@ async def test_raise_from_button_zero_is_not_quieter(fast_sleep):
         volume_by_state={"LISTENING": 0.0, "IDLE": 0.1},
         track=make_track(playing=False),
     )
-    station.unmute.side_effect = None
+    station.unmute.return_value = False
     ruark = make_ruark(volume=20)
     manager = make_voice_manager(station, ruark)
 

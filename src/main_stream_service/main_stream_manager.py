@@ -70,8 +70,8 @@ class _CycleContext:
     # переустановки одного и того же уровня каждую итерацию цикла.
     # None до первого возврата — окно переноса голосовой громкости
     restored_volume: int | None = None
-    # Громкость, которую станция приняла перед репликой Алисы: от неё
-    # считаются «громче» и «тише»
+    # Громкость станции перед репликой Алисы: от неё считаются «громче»
+    # и «тише»
     reply_volume: float = 0.0
 
 
@@ -281,12 +281,11 @@ class MainStreamManager:
             ctx.restored_volume = None
             await self._ruark_controls.set_volume(RUARK_IDLE_VOLUME)
 
-            if current_volume == 0:
-                await self._station_controls.unmute()
-                # Ответ на setVolume приходит состоянием станции: читаем
-                # принятый уровень — станция может зажать отправленный
-                current_volume = await self._station_controls.get_volume()
             working = self._station_controls.working_volume
+            # Ответ на unmute несёт прежнюю громкость станции, поэтому
+            # после отправки база — отправленный рабочий уровень
+            if current_volume == 0 and await self._station_controls.unmute():
+                current_volume = working
             ctx.reply_volume = (
                 working if current_volume is None else current_volume
             )

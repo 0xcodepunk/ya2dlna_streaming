@@ -237,9 +237,14 @@ class YandexStationControls:
             self._was_muted = True
             logger.info("🔇 Станция замьючена безопасно")
 
-    async def unmute(self):
+    async def unmute(self) -> bool:
+        """Возвращает станции рабочий уровень громкости.
+
+        Returns:
+            bool: True, если уровень отправлен станции.
+        """
         if not self._was_muted:
-            return
+            return False
         logger.info("🔊 Включение громкости")
         try:
             await self._ws_client.send_command(
@@ -249,8 +254,10 @@ class YandexStationControls:
                 }
             )
             self._was_muted = False
+            return True
         except Exception as e:
             logger.error(f"❌ Ошибка при включении громкости: {e}")
+            return False
 
     async def fade_out_station(self):
         """Плавное отключение звука станции с задержкой."""
