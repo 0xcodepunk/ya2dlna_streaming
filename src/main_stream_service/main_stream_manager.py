@@ -1,6 +1,7 @@
 import asyncio
 import time
 from dataclasses import dataclass
+from enum import Enum, auto
 from logging import getLogger
 from typing import Any, Awaitable, Callable
 
@@ -45,6 +46,17 @@ STREAM_BROKEN_PHRASE = (
 )
 
 
+class _VoiceVolumeCheck(Enum):
+    """Что гашению делать с голосовой громкостью реплики."""
+
+    # Не разбирать: ключ выключен или реплика уже разобрана
+    SKIP = auto()
+    # Первая проверка сдвига не увидела, он мог прийти позже
+    LATE = auto()
+    # Первая проверка уже перенесла сдвиг на Ruark
+    MOVED = auto()
+
+
 @dataclass
 class _CycleContext:
     """Изменяемое состояние цикла стриминга между итерациями."""
@@ -71,8 +83,8 @@ class _CycleContext:
     # None до первого возврата — окно переноса голосовой громкости
     restored_volume: int | None = None
     # Громкость станции перед репликой Алисы: от неё считаются «громче»
-    # и «тише»
-    reply_volume: float = 0.0
+    # и «тише». None до первой реплики
+    reply_volume: float | None = None
 
 
 class MainStreamManager:
@@ -289,10 +301,9 @@ class MainStreamManager:
             # Станцию, заглушённую стримом, unmute возвращает на рабочий
             # уровень — он и база: и ответ на unmute, и чтение сразу
             # после прерванного гашения несут прежнюю громкость
-            if await self._station_controls.unmute():
-                current_volume = working
+            sent = await self._station_controls.unmute()
             ctx.reply_volume = (
-                working if current_volume is None else current_volume
+                working if sent or current_volume is None else current_volume
             )
             if ctx.reply_volume != working:
                 logger.info(
@@ -678,17 +689,18 @@ class MainStreamManager:
         self, track: Track, ctx: "_CycleContext"
     ) -> None:
         """Возвращает громкость Ruark после речи Алисы."""
-        moved = False
+        check = _VoiceVolumeCheck.SKIP
+        base = ctx.reply_volume
         # Голосовая громкость разбирается один раз, в проходе сразу после
         # реплики: на паузе гашение ждёт продолжения, а громкость станции
         # к нему могли поменять уже не голосом
-        voice = (
-            ctx.speak_count > 0
+        if (
+            base is not None
+            and ctx.speak_count > 0
             and ctx.restored_volume is None
             and settings.voice_volume_to_ruark
-        )
-        if voice:
-            moved = await self._move_voice_volume_to_ruark(ctx)
+        ):
+            check = await self._move_voice_volume_to_ruark(base)
 
         if ctx.speak_count > 0 and track.playing:
             logger.info("🔁 Возвращаем громкость Ruark")
@@ -730,7 +742,7 @@ class MainStreamManager:
                     logger.warning(
                         "⚠️ Нет сохранённого URL трека для перезапуска"
                     )
-            await self._fade_station_after_reply(ctx, voice, moved)
+            await self._fade_station_after_reply(ctx, check)
             ctx.speak_count = 0
 
         if ctx.speak_count > 0 and not track.playing:
@@ -780,49 +792,51 @@ class MainStreamManager:
         )
         return volume
 
-    async def _move_voice_volume_to_ruark(self, ctx: "_CycleContext") -> bool:
+    async def _move_voice_volume_to_ruark(
+        self, base: float
+    ) -> _VoiceVolumeCheck:
         """Переносит на Ruark сдвиг станции в первой IDLE-итерации.
 
         Args:
-            ctx (_CycleContext): Состояние цикла с громкостью перед репликой.
+            base (float): Громкость станции перед репликой.
         Returns:
-            bool: True, если сдвиг перенесён.
+            _VoiceVolumeCheck: MOVED, если сдвиг перенесён, иначе LATE.
         """
         volume = self._voice_ruark_volume(
-            await self._station_controls.get_volume(), ctx.reply_volume
+            await self._station_controls.get_volume(), base
         )
         if volume is None:
-            return False
+            return _VoiceVolumeCheck.LATE
         self._ruark_volume = volume
         # Сразу, без плавного снижения: иначе гашение после реплики
         # приняло бы сдвиг за новый рабочий уровень станции
-        await self._station_controls.set_volume(ctx.reply_volume)
-        return True
+        await self._station_controls.set_volume(base)
+        return _VoiceVolumeCheck.MOVED
 
     async def _fade_station_after_reply(
-        self, ctx: "_CycleContext", voice: bool, moved: bool
+        self, ctx: "_CycleContext", check: _VoiceVolumeCheck
     ) -> None:
         """Гасит станцию после реплики и разбирает сдвиг перед гашением.
 
         Args:
             ctx (_CycleContext): Состояние цикла с громкостью перед репликой.
-            voice (bool): Разбирать голосовую громкость за реплику.
-            moved (bool): Сдвиг уже перенесла первая проверка.
+            check (_VoiceVolumeCheck): Что делать с голосовой громкостью.
         """
         start = await self._station_controls.fade_out_alice_volume()
-        if not voice:
+        base = ctx.reply_volume
+        if check is _VoiceVolumeCheck.SKIP or base is None:
             return
-        if moved:
+        if check is _VoiceVolumeCheck.MOVED:
             # Гашение могло прочитать перенесённый сдвиг раньше, чем
             # станция сообщила возврат на прежний уровень
-            self._station_controls.working_volume = ctx.reply_volume
+            self._station_controls.working_volume = base
             return
         # Станция может сообщить сдвиг позже первой проверки
-        volume = self._voice_ruark_volume(start, ctx.reply_volume)
+        volume = self._voice_ruark_volume(start, base)
         if volume is None:
             return
         # Гашение приняло сдвиг за рабочий уровень — возвращаем прежний
-        self._station_controls.working_volume = ctx.reply_volume
+        self._station_controls.working_volume = base
         self._ruark_volume = volume
         await self._restore_ruark_volume(ctx)
 
