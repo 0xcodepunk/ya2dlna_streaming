@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from core.config.settings import settings
 from main_stream_service.yandex_music_api import YandexMusicAPI
 
 
@@ -58,6 +59,7 @@ async def test_get_file_info_returns_none_without_track():
 
 
 async def test_get_track_source_prefers_lossless(monkeypatch):
+    monkeypatch.setattr(settings, "prefer_lossless", True)
     api = make_api([info("mp3", 320, "link-320")])
     lossless_mock = AsyncMock(return_value="https://cdn/flac-url")
     monkeypatch.setattr(api, "_get_lossless_url", lossless_mock)
@@ -70,6 +72,7 @@ async def test_get_track_source_prefers_lossless(monkeypatch):
 
 
 async def test_get_track_source_falls_back_to_mp3(monkeypatch):
+    monkeypatch.setattr(settings, "prefer_lossless", True)
     api = make_api([info("mp3", 320, "link-320")])
     monkeypatch.setattr(api, "_get_lossless_url", AsyncMock(return_value=None))
 
@@ -84,8 +87,6 @@ async def test_get_track_source_ignores_aac_masquerading_as_best(
     monkeypatch,
 ):
     """Без MP3-320 лучшим по битрейту был бы AAC — берём лучший MP3."""
-    from core.config.settings import settings
-
     monkeypatch.setattr(settings, "prefer_lossless", False)
     api = make_api(
         [
@@ -105,8 +106,6 @@ async def test_get_track_source_rescues_with_lossless_without_mp3(
     monkeypatch,
 ):
     """У трека нет MP3 вовсе — разовый фолбэк на lossless."""
-    from core.config.settings import settings
-
     monkeypatch.setattr(settings, "prefer_lossless", False)
     api = make_api([info("aac", 256, "link-aac-256")])
     monkeypatch.setattr(
@@ -121,8 +120,6 @@ async def test_get_track_source_rescues_with_lossless_without_mp3(
 
 
 async def test_get_track_source_skips_lossless_when_disabled(monkeypatch):
-    from core.config.settings import settings
-
     monkeypatch.setattr(settings, "prefer_lossless", False)
     api = make_api([info("mp3", 320, "link-320")])
     lossless_mock = AsyncMock(return_value="https://cdn/flac-url")
