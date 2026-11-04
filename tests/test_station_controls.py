@@ -178,6 +178,7 @@ async def test_unmute_reports_level_until_station_confirms(monkeypatch):
     ws_client = controls._ws_client
     await controls.fade_out_alice_volume()
     assert await controls.unmute()
+    assert controls.level_unconfirmed
     sent = len(sent_volumes(controls))
 
     # Станция ещё сообщает прежний ноль: уровень в пути, второй раз не шлём
@@ -193,3 +194,4 @@ async def test_unmute_reports_level_until_station_confirms(monkeypatch):
     ws_client.get_latest_message.return_value = {"state": {"volume": 0.0}}
     await controls.get_volume()
     assert not await controls.unmute()
+    assert not controls.level_unconfirmed

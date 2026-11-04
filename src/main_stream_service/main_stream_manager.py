@@ -801,9 +801,12 @@ class MainStreamManager:
         Returns:
             _VoiceVolumeCheck: MOVED, если сдвиг перенесён, иначе LATE.
         """
-        volume = self._voice_ruark_volume(
-            await self._station_controls.get_volume(), base
-        )
+        current = await self._station_controls.get_volume()
+        # Ноль сразу после unmute бывает ответом станции с прежней
+        # громкостью, а не командой: решит гашение по свежему чтению
+        if current == 0 and self._station_controls.level_unconfirmed:
+            return _VoiceVolumeCheck.LATE
+        volume = self._voice_ruark_volume(current, base)
         if volume is None:
             return _VoiceVolumeCheck.LATE
         self._ruark_volume = volume

@@ -83,6 +83,7 @@ def make_station_controls(track=None, alice_states=("IDLE",), tracks=None):
 
     controls.get_volume.return_value = 0.5
     controls.working_volume = 0.5
+    controls.level_unconfirmed = False
     # Гашение пропущено: станция уже заглушена
     controls.fade_out_alice_volume.return_value = None
     controls.get_radio_url.return_value = "http://radio/master.m3u8"
@@ -1226,6 +1227,61 @@ async def test_voice_volume_down_stops_at_ruark_minimum(fast_sleep):
 
     assert ruark.set_volume.call_args_list[-1] == ((RUARK_MIN_VOICE_VOLUME,),)
     station.set_volume.assert_awaited_once_with(0.5)
+
+
+async def test_stale_zero_after_unmute_is_not_quieter(fast_sleep):
+    """Ноль сразу после unmute — ответ станции, а не команда «тише»."""
+    # Короткая реплика: IDLE пришло в ответе на unmute с прежним нулём,
+    # а через секунду гашение читает уже рабочий уровень
+    station = make_voice_station(
+        alice_states=("IDLE", "BUSY", "IDLE"),
+        volume_by_state={"BUSY": 0.0, "IDLE": 0.0},
+    )
+    station.level_unconfirmed = True
+    station.fade_out_alice_volume.return_value = 0.5
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+    ]
+    station.set_volume.assert_not_awaited()
+
+
+async def test_real_zero_after_unmute_moved_after_fade(fast_sleep):
+    """Если и гашение читает ноль, это команда: Ruark идёт на границу."""
+    station = make_voice_station(
+        alice_states=("IDLE", "BUSY", "IDLE"),
+        volume_by_state={"BUSY": 0.0, "IDLE": 0.0},
+    )
+    station.level_unconfirmed = True
+    fades = []
+
+    async def zero_fade():
+        fades.append(1)
+        if len(fades) > 1:
+            return None
+        station.working_volume = 0.0
+        return 0.0
+
+    station.fade_out_alice_volume.side_effect = zero_fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: len(fades) > 0)
+
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20,),),
+        ((RUARK_MIN_VOICE_VOLUME,),),
+    ]
+    assert station.working_volume == 0.5
 
 
 async def test_voice_volume_down_never_raises_quiet_ruark(fast_sleep):

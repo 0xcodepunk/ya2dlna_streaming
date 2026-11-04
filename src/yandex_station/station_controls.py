@@ -202,6 +202,11 @@ class YandexStationControls:
         """Задаёт рабочий уровень громкости."""
         self._volume = volume
 
+    @property
+    def level_unconfirmed(self) -> bool:
+        """Уровень отправлен unmute, но станция ещё его не сообщила."""
+        return self._level_unconfirmed
+
     async def set_default_volume(self):
         """Установка громкости по умолчанию."""
         logger.info("🔊 Установка громкости по умолчанию")
