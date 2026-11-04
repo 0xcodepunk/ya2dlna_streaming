@@ -104,17 +104,13 @@ async def test_fade_returns_volume_seen_before_fade(monkeypatch):
     )
 
 
-def make_fading_controls(volume, alice_states, sleeps):
+def make_fading_controls(volume, alice_states):
     """Контролы станции, где состояние Алисы меняется после команд.
 
     Станция сообщает громкость volume. alice_states выдаются по одному
-    на каждую отправленную команду, последний элемент повторяется;
-    паузы складываются в sleeps.
+    на каждую отправленную команду, последний элемент повторяется.
     """
     states = list(alice_states)
-
-    async def record_sleep(delay):
-        sleeps.append(delay)
 
     async def latest():
         return {"state": {"volume": volume, "aliceState": states[0]}}
@@ -131,7 +127,7 @@ def make_fading_controls(volume, alice_states, sleeps):
         ws_client=ws_client,
         protobuf=MagicMock(spec=Protobuf),
     )
-    return controls, record_sleep
+    return controls
 
 
 def sent_volumes(controls):
@@ -144,12 +140,9 @@ def sent_volumes(controls):
 
 async def test_fade_stops_when_alice_listens_again(monkeypatch):
     """Новая реплика прерывает гашение: станция сразу уходит в ноль."""
-    sleeps = []
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
     # Пока шёл первый шаг гашения, слушатель снова сказал «Алиса»
-    controls, record_sleep = make_fading_controls(
-        0.6, ("IDLE", "LISTENING"), sleeps
-    )
-    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    controls = make_fading_controls(0.6, ("IDLE", "LISTENING"))
 
     await controls.fade_out_alice_volume()
 
@@ -160,13 +153,19 @@ async def test_fade_stops_when_alice_listens_again(monkeypatch):
     assert sent_volumes(controls)[-1] == 0.6
 
 
-async def test_fade_skips_pause_when_alice_already_listens(monkeypatch):
-    """Алиса уже слушает — гашение без паузы сразу уводит станцию в ноль."""
-    sleeps = []
-    controls, record_sleep = make_fading_controls(0.6, ("LISTENING",), sleeps)
-    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+async def test_fade_reads_late_volume_when_alice_already_listens(monkeypatch):
+    """Алиса уже слушает — гашение всё равно ждёт запоздавшую громкость."""
+    controls = make_fading_controls(0.6, ("LISTENING",))
+    ws_client = controls._ws_client
 
-    await controls.fade_out_alice_volume()
+    async def late_command(delay):
+        # К концу паузы станция сообщила команду прошлой реплики
+        ws_client.get_latest_message.side_effect = None
+        ws_client.get_latest_message.return_value = {
+            "state": {"volume": 0.7, "aliceState": "LISTENING"}
+        }
 
+    monkeypatch.setattr(asyncio, "sleep", late_command)
+
+    assert await controls.fade_out_alice_volume() == 0.7
     assert sent_volumes(controls) == [0.0]
-    assert sleeps == []

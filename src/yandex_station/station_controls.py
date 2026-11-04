@@ -276,17 +276,17 @@ class YandexStationControls:
     ) -> float | None:
         """Плавное уменьшение громкости Алисы в несколько шагов.
 
-        Если Алиса снова слушает или говорит, станция сразу уходит
-        в ноль, а рабочий уровень ей вернёт unmute новой реплики.
+        Если Алиса снова слушает или говорит, оставшиеся ступени
+        пропускаются: станция уходит в ноль, а рабочий уровень ей вернёт
+        unmute новой реплики.
 
         Returns:
             float | None: Громкость перед гашением или None без гашения.
         """
         if self._was_muted:
             return None
-        if not await self._is_alice_active():
-            logger.info(f"🎧 Ждём {FADE_TIME}s перед fade out громкости")
-            await asyncio.sleep(FADE_TIME)
+        logger.info(f"🎧 Ждём {FADE_TIME}s перед fade out громкости")
+        await asyncio.sleep(FADE_TIME)
         start_volume = await self.get_volume()
         if start_volume is None:
             logger.warning(
