@@ -865,6 +865,39 @@ async def test_late_voice_volume_moved_after_fade(fast_sleep):
     assert station.working_volume == 0.5
 
 
+async def test_stale_raise_in_fade_after_move_keeps_working_volume(
+    fast_sleep,
+):
+    """Перенесённая прибавка, прочитанная гашением ещё раз, не копится."""
+    # Первая проверка перенесла 0.5 ➝ 0.6 и вернула станцию на 0.5,
+    # но гашение прочитало устаревшее 0.6 и, как настоящее, приняло его
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.6},
+    )
+    fades = []
+
+    async def stale_fade():
+        fades.append(1)
+        if len(fades) > 1:
+            return None
+        station.working_volume = 0.6
+        return 0.6
+
+    station.fade_out_alice_volume.side_effect = stale_fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: len(fades) > 0)
+
+    # Прибавка перенесена один раз, а не повторно после гашения
+    assert ruark.set_volume.call_args_list == [
+        ((RUARK_IDLE_VOLUME,),),
+        ((20 + RUARK_VOLUME_PER_STATION_STEP,),),
+    ]
+    assert station.working_volume == 0.5
+
+
 async def test_voice_volume_capped_at_ruark_maximum(fast_sleep):
     """Прибавка не выводит Ruark за верхнюю границу громкости."""
     station = make_voice_station(

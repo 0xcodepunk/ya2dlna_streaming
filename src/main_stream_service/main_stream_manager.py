@@ -662,8 +662,6 @@ class MainStreamManager:
             and settings.voice_volume_to_ruark
         ):
             moved = await self._move_voice_volume_to_ruark()
-        # Станция может сообщить прибавку позже — её увидит гашение
-        check_late = settings.voice_volume_to_ruark and not moved
 
         if ctx.speak_count > 0 and track.playing:
             logger.info("🔁 Возвращаем громкость Ruark")
@@ -675,7 +673,7 @@ class MainStreamManager:
             for _ in range(attempts):
                 if await self._ruark_controls.is_playing():
                     logger.info("▶️ Ruark начал играть")
-                    await self._fade_station_after_reply(ctx, check_late)
+                    await self._fade_station_after_reply(ctx, moved)
                     ctx.speak_count = 0
                     break
                 await asyncio.sleep(0.1)
@@ -701,7 +699,7 @@ class MainStreamManager:
                     logger.warning(
                         "⚠️ Нет сохранённого URL трека для перезапуска"
                     )
-                await self._fade_station_after_reply(ctx, check_late)
+                await self._fade_station_after_reply(ctx, moved)
                 ctx.speak_count = 0
 
         if ctx.speak_count > 0 and not track.playing:
@@ -765,18 +763,24 @@ class MainStreamManager:
         return True
 
     async def _fade_station_after_reply(
-        self, ctx: "_CycleContext", check_late: bool
+        self, ctx: "_CycleContext", moved: bool
     ) -> None:
-        """Гасит станцию после реплики и переносит запоздавшую прибавку.
+        """Гасит станцию после реплики и разбирает прибавку перед гашением.
 
         Args:
             ctx (_CycleContext): Состояние цикла с возвращённой громкостью.
-            check_late (bool): Искать прибавку в громкости перед гашением.
+            moved (bool): Прибавку уже перенесла первая проверка.
         """
         base = self._station_controls.working_volume
         start = await self._station_controls.fade_out_alice_volume()
-        if not check_late:
+        if not settings.voice_volume_to_ruark:
             return
+        if moved:
+            # Гашение могло прочитать перенесённую прибавку раньше, чем
+            # станция сообщила возврат на рабочий уровень
+            self._station_controls.working_volume = base
+            return
+        # Станция может сообщить прибавку позже первой проверки
         volume = self._louder_ruark_volume(start, base)
         if volume is None:
             return
