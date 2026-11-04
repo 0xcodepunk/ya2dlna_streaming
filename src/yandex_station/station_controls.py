@@ -266,7 +266,7 @@ class YandexStationControls:
             logger.error(f"❌ Ошибка при включении громкости: {e}")
             return False
 
-    async def _is_alice_active(self) -> bool:
+    async def is_alice_active(self) -> bool:
         """Проверяет, слушает или говорит ли Алиса."""
         return await self.get_alice_state() in ALICE_ACTIVE_STATES
 
@@ -312,13 +312,13 @@ class YandexStationControls:
             v = volume
             # Новая реплика Алисы прерывает гашение: оставшиеся ступени
             # перезаписали бы громкость, которую меняет её команда
-            while v > min_volume and not await self._is_alice_active():
+            while v > min_volume and not await self.is_alice_active():
                 await self.set_volume(round(v, 1))
                 logger.info(f"  ➤ Устанавливаем громкость: {v:.1f}")
                 v -= step
                 await asyncio.sleep(delay)
             if v > min_volume:
-                logger.info("🎙 Алиса снова слушает — гашение прервано")
+                logger.info("🎙 Алиса снова активна — гашение прервано")
 
             await self.set_volume(round(min_volume, 1))
             self._was_muted = True

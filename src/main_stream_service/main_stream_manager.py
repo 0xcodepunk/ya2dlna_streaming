@@ -715,9 +715,8 @@ class MainStreamManager:
                     break
                 # Новая реплика не ждёт Ruark: гашение уступит ей станцию,
                 # а поток проверит следующий возврат громкости
-                alice_state = await self._station_controls.get_alice_state()
-                if alice_state in ALICE_ACTIVE_STATES:
-                    logger.info("🎙 Алиса снова слушает — Ruark не ждём")
+                if await self._station_controls.is_alice_active():
+                    logger.info("🎙 Алиса снова активна — Ruark не ждём")
                     break
                 await asyncio.sleep(0.1)
             else:

@@ -13,6 +13,7 @@ from main_stream_service.main_stream_manager import (
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
+    ALICE_ACTIVE_STATES,
     RUARK_IDLE_VOLUME,
     RUARK_MIN_VOICE_VOLUME,
     RUARK_VOLUME_PER_STATION_STEP,
@@ -64,6 +65,11 @@ def make_station_controls(track=None, alice_states=("IDLE",), tracks=None):
         return states.pop(0) if len(states) > 1 else states[0]
 
     controls.get_alice_state.side_effect = next_state
+
+    async def alice_active():
+        return await controls.get_alice_state() in ALICE_ACTIVE_STATES
+
+    controls.is_alice_active.side_effect = alice_active
 
     if tracks is not None:
         queue = list(tracks)
