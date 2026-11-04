@@ -809,21 +809,20 @@ class MainStreamManager:
             voice (bool): Разбирать голосовую громкость за реплику.
             moved (bool): Сдвиг уже перенесла первая проверка.
         """
-        working = self._station_controls.working_volume
         start = await self._station_controls.fade_out_alice_volume()
         if not voice:
             return
         if moved:
             # Гашение могло прочитать перенесённый сдвиг раньше, чем
             # станция сообщила возврат на прежний уровень
-            self._station_controls.working_volume = working
+            self._station_controls.working_volume = ctx.reply_volume
             return
         # Станция может сообщить сдвиг позже первой проверки
         volume = self._voice_ruark_volume(start, ctx.reply_volume)
         if volume is None:
             return
         # Гашение приняло сдвиг за рабочий уровень — возвращаем прежний
-        self._station_controls.working_volume = working
+        self._station_controls.working_volume = ctx.reply_volume
         self._ruark_volume = volume
         await self._restore_ruark_volume(ctx)
 

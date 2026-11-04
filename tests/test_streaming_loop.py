@@ -936,6 +936,65 @@ async def test_stale_raise_in_fade_after_move_keeps_working_volume(
     assert station.working_volume == 0.5
 
 
+async def test_move_restores_working_level_from_before_reply(fast_sleep):
+    """После переноса рабочий уровень — громкость перед репликой."""
+    # Сеанс прочитал устаревший ноль, гашения ещё не было: unmute ничего
+    # не отправил, и базой стали прочитанные 0.6, а гашение прочитало 0.7
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.6, "IDLE": 0.7},
+    )
+    station.working_volume = 0.0
+    station.unmute.return_value = False
+    fades = []
+
+    async def stale_fade():
+        fades.append(1)
+        if len(fades) > 1:
+            return None
+        station.working_volume = 0.7
+        return 0.7
+
+    station.fade_out_alice_volume.side_effect = stale_fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: len(fades) > 0)
+
+    station.set_volume.assert_awaited_once_with(0.6)
+    # Устаревший ноль сделал бы Алису немой до конца сеанса
+    assert station.working_volume == 0.6
+
+
+async def test_late_move_restores_working_level_from_before_reply(fast_sleep):
+    """Поздний перенос тоже возвращает громкость перед репликой."""
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.6, "IDLE": 0.6},
+    )
+    station.working_volume = 0.0
+    station.unmute.return_value = False
+    fades = []
+
+    async def late_fade():
+        fades.append(1)
+        if len(fades) > 1:
+            return None
+        station.working_volume = 0.7
+        return 0.7
+
+    station.fade_out_alice_volume.side_effect = late_fade
+    ruark = make_ruark(volume=20)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: len(fades) > 0)
+
+    assert ruark.set_volume.call_args_list[-1] == (
+        (20 + RUARK_VOLUME_PER_STATION_STEP,),
+    )
+    assert station.working_volume == 0.6
+
+
 async def test_voice_volume_capped_at_ruark_maximum(fast_sleep):
     """Прибавка не выводит Ruark за верхнюю границу громкости."""
     station = make_voice_station(
