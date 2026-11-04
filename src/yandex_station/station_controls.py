@@ -34,6 +34,8 @@ class YandexStationControls:
         self._protobuf = protobuf
         self._volume = 0
         self._was_muted = False
+        # Уровень отправлен unmute, но станция ещё сообщает прежнюю громкость
+        self._level_unconfirmed = False
 
     async def start_ws_client(self):
         """Запуск WebSocket-клиента."""
@@ -182,7 +184,10 @@ class YandexStationControls:
             logger.debug(
                 f"🔊 Получение текущего уровня громкости Алиcы: {volume}"
             )
-            return float(volume)
+            level = float(volume)
+            if level > 0:
+                self._level_unconfirmed = False
+            return level
         except Exception as e:
             logger.error(f"❌ Ошибка при получении громкости: {e}")
             return None
@@ -196,6 +201,11 @@ class YandexStationControls:
     def working_volume(self, volume: float) -> None:
         """Задаёт рабочий уровень громкости."""
         self._volume = volume
+
+    @property
+    def level_unconfirmed(self) -> bool:
+        """Уровень отправлен unmute, но станция ещё его не сообщила."""
+        return self._level_unconfirmed
 
     async def set_default_volume(self):
         """Установка громкости по умолчанию."""
@@ -237,9 +247,15 @@ class YandexStationControls:
             self._was_muted = True
             logger.info("🔇 Станция замьючена безопасно")
 
-    async def unmute(self):
+    async def unmute(self) -> bool:
+        """Возвращает станции рабочий уровень громкости.
+
+        Returns:
+            bool: True, если уровень отправлен, а станция ещё не сообщила
+                его: прочитанная громкость может быть прежней.
+        """
         if not self._was_muted:
-            return
+            return self._level_unconfirmed
         logger.info("🔊 Включение громкости")
         try:
             await self._ws_client.send_command(
@@ -249,8 +265,15 @@ class YandexStationControls:
                 }
             )
             self._was_muted = False
+            self._level_unconfirmed = True
+            return True
         except Exception as e:
             logger.error(f"❌ Ошибка при включении громкости: {e}")
+            return False
+
+    async def is_alice_active(self) -> bool:
+        """Проверяет, слушает или говорит ли Алиса."""
+        return await self.get_alice_state() in ALICE_ACTIVE_STATES
 
     async def fade_out_station(self):
         """Плавное отключение звука станции с задержкой."""
@@ -264,6 +287,10 @@ class YandexStationControls:
         self, min_volume: float = 0.0, step: float = 0.1, delay: float = 0.3
     ) -> float | None:
         """Плавное уменьшение громкости Алисы в несколько шагов.
+
+        Если Алиса снова слушает или говорит, оставшиеся ступени
+        пропускаются: станция уходит в ноль, а рабочий уровень ей вернёт
+        unmute новой реплики.
 
         Returns:
             float | None: Громкость перед гашением или None без гашения.
@@ -288,11 +315,15 @@ class YandexStationControls:
 
         try:
             v = volume
-            while v > min_volume:
+            # Новая реплика Алисы прерывает гашение: оставшиеся ступени
+            # перезаписали бы громкость, которую меняет её команда
+            while v > min_volume and not await self.is_alice_active():
                 await self.set_volume(round(v, 1))
                 logger.info(f"  ➤ Устанавливаем громкость: {v:.1f}")
                 v -= step
                 await asyncio.sleep(delay)
+            if v > min_volume:
+                logger.info("🎙 Алиса снова активна — гашение прервано")
 
             await self.set_volume(round(min_volume, 1))
             self._was_muted = True
