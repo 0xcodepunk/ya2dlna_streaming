@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from yandex_station.protobuf_parser import Protobuf
@@ -80,4 +81,24 @@ async def test_say_sends_repeat_command_to_station():
 
     controls._ws_client.send_command.assert_awaited_once_with(
         {"command": "sendText", "text": "Повтори за мной тестовая фраза"}
+    )
+
+
+async def test_fade_returns_volume_seen_before_fade(monkeypatch):
+    """Гашение отдаёт громкость, с которой начало, и уводит в ноль."""
+
+    async def no_sleep(delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    ws_client = AsyncMock(spec=YandexStationClient)
+    ws_client.get_latest_message.return_value = {"state": {"volume": 0.7}}
+    controls = YandexStationControls(
+        ws_client=ws_client,
+        protobuf=MagicMock(spec=Protobuf),
+    )
+
+    assert await controls.fade_out_alice_volume() == 0.7
+    ws_client.send_command.assert_awaited_with(
+        {"command": "setVolume", "volume": 0.0}
     )

@@ -7,6 +7,14 @@ RUARK_IDLE_VOLUME = 2
 # и стрим не должен начинаться в полной тишине
 RUARK_MIN_START_VOLUME = 15
 
+RUARK_MAX_VOLUME = 100
+
+# Голосовая громкость: шаг станции на одно «Алиса, громче» и сколько
+# единиц Ruark (0–100) он прибавляет. Значение подбирается на живой
+# системе; щелчок ручки Ruark — около 3.2 единицы
+STATION_VOLUME_STEP = 0.1
+RUARK_VOLUME_PER_STATION_STEP = 7
+
 FADE_TIME = 1
 
 SOCKET_RECONNECT_DELAY = 1

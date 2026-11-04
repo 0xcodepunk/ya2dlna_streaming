@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     stream_is_local_file: bool = False
     # Предпочитать lossless (FLAC), когда он доступен для трека
     prefer_lossless: bool = True
+    # «Алиса, громче» во время стрима прибавляет громкость Ruark
+    voice_volume_to_ruark: bool = True
 
 
 settings = Settings()
