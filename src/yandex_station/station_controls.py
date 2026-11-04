@@ -34,6 +34,8 @@ class YandexStationControls:
         self._protobuf = protobuf
         self._volume = 0
         self._was_muted = False
+        # Уровень отправлен unmute, но станция ещё сообщает прежнюю громкость
+        self._level_unconfirmed = False
 
     async def start_ws_client(self):
         """Запуск WebSocket-клиента."""
@@ -182,7 +184,10 @@ class YandexStationControls:
             logger.debug(
                 f"🔊 Получение текущего уровня громкости Алиcы: {volume}"
             )
-            return float(volume)
+            level = float(volume)
+            if level > 0:
+                self._level_unconfirmed = False
+            return level
         except Exception as e:
             logger.error(f"❌ Ошибка при получении громкости: {e}")
             return None
@@ -241,10 +246,11 @@ class YandexStationControls:
         """Возвращает станции рабочий уровень громкости.
 
         Returns:
-            bool: True, если уровень отправлен станции.
+            bool: True, если уровень отправлен, а станция ещё не сообщила
+                его: прочитанная громкость может быть прежней.
         """
         if not self._was_muted:
-            return False
+            return self._level_unconfirmed
         logger.info("🔊 Включение громкости")
         try:
             await self._ws_client.send_command(
@@ -254,6 +260,7 @@ class YandexStationControls:
                 }
             )
             self._was_muted = False
+            self._level_unconfirmed = True
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка при включении громкости: {e}")

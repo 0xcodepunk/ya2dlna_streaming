@@ -169,3 +169,27 @@ async def test_fade_reads_late_volume_when_alice_already_listens(monkeypatch):
 
     assert await controls.fade_out_alice_volume() == 0.7
     assert sent_volumes(controls) == [0.0]
+
+
+async def test_unmute_reports_level_until_station_confirms(monkeypatch):
+    """Пока станция не подтвердила уровень, unmute считает его своим."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    controls = make_fading_controls(0.6, ("IDLE",))
+    ws_client = controls._ws_client
+    await controls.fade_out_alice_volume()
+    assert await controls.unmute()
+    sent = len(sent_volumes(controls))
+
+    # Станция ещё сообщает прежний ноль: уровень в пути, второй раз не шлём
+    ws_client.get_latest_message.side_effect = None
+    ws_client.get_latest_message.return_value = {"state": {"volume": 0.0}}
+    await controls.get_volume()
+    assert await controls.unmute()
+    assert len(sent_volumes(controls)) == sent
+
+    # Станция подтвердила уровень: новый ноль уже не наш, а с кнопки
+    ws_client.get_latest_message.return_value = {"state": {"volume": 0.6}}
+    await controls.get_volume()
+    ws_client.get_latest_message.return_value = {"state": {"volume": 0.0}}
+    await controls.get_volume()
+    assert not await controls.unmute()
