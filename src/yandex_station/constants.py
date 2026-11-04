@@ -13,7 +13,7 @@ RUARK_MAX_VOLUME = 100
 # единиц Ruark (0–100) он прибавляет. Значение подбирается на живой
 # системе; щелчок ручки Ruark — около 3.2 единицы
 STATION_VOLUME_STEP = 0.1
-RUARK_VOLUME_PER_STATION_STEP = 5
+RUARK_VOLUME_PER_STATION_STEP = 7
 
 FADE_TIME = 1
 
