@@ -210,6 +210,10 @@ class YandexStationControls:
     async def set_default_volume(self):
         """Установка громкости по умолчанию."""
         logger.info("🔊 Установка громкости по умолчанию")
+        # Громкость заглушённой стримом станции — след гашения, а не уровень
+        if self._was_muted:
+            logger.info(f"Станция заглушена, рабочий уровень: {self._volume}")
+            return
         volume = await self.get_volume()
         if volume is not None:
             self._volume = volume

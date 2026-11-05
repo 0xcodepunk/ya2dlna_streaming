@@ -195,3 +195,26 @@ async def test_unmute_reports_level_until_station_confirms(monkeypatch):
     await controls.get_volume()
     assert not await controls.unmute()
     assert not controls.level_unconfirmed
+
+
+def report_volume(controls, volume):
+    """Станция сообщает новую громкость; None — сообщений ещё нет."""
+    ws_client = controls._ws_client
+    ws_client.get_latest_message.side_effect = None
+    ws_client.get_latest_message.return_value = (
+        None if volume is None else {"state": {"volume": volume}}
+    )
+
+
+async def test_loop_restart_keeps_working_volume_of_muted_station(monkeypatch):
+    """Перезапуск цикла не принимает ноль гашения за рабочий уровень."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    controls = make_fading_controls(0.6, ("IDLE",))
+    await controls.fade_out_alice_volume()
+    report_volume(controls, 0.0)
+
+    await controls.set_default_volume()
+
+    assert controls.working_volume == 0.6
+    assert await controls.unmute()
+    assert sent_volumes(controls)[-1] == 0.6
