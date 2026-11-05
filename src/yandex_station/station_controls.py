@@ -8,6 +8,7 @@ from injector import inject
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     FADE_TIME,
+    STATION_VOLUME_STEP,
     TTS_REPEAT_PREFIX,
 )
 from yandex_station.models import Track
@@ -315,7 +316,10 @@ class YandexStationControls:
         await self.mute()
 
     async def fade_out_alice_volume(
-        self, min_volume: float = 0.0, step: float = 0.1, delay: float = 0.3
+        self,
+        min_volume: float = 0.0,
+        step: float = STATION_VOLUME_STEP,
+        delay: float = 0.3,
     ) -> float | None:
         """Плавное уменьшение громкости Алисы в несколько шагов.
 
@@ -337,7 +341,7 @@ class YandexStationControls:
             )
             return None
         self.working_volume = start_volume
-        volume = round(start_volume - (start_volume % step), 1)
+        volume = round(start_volume, 1)
 
         logger.info(
             f"🔉 Плавное снижение громкости Алисы: "
