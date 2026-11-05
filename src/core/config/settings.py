@@ -22,6 +22,8 @@ class Settings(BaseSettings):
         env_file=resolve_env_path(),
         env_prefix="APP_",
         extra="ignore",
+        # Текст ошибки валидации не должен показывать токен и PIN из ввода
+        hide_input_in_errors=True,
     )
 
     # Yandex Music settings

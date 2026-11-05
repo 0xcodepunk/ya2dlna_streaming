@@ -1,8 +1,9 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
+import pytest
 from injector import Injector
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from core.authorization.yandex_tokens import get_device_token
 from core.config.settings import Settings, settings
@@ -36,6 +37,18 @@ def test_repr_hides_token_and_pin():
     for text in (repr(config), str(config)):
         assert TOKEN not in text
         assert PIN not in text
+
+
+def test_validation_error_hides_token_and_pin(monkeypatch):
+    monkeypatch.delenv("APP_LOCAL_SERVER_HOST", raising=False)
+
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=None, ya_music_token=TOKEN, ruark_pin=PIN)
+
+    text = str(error.value)
+    assert "local_server_host" in text
+    # Длинный ввод pydantic усекает, поэтому ищем общее начало значений
+    assert "dummy" not in text
 
 
 async def test_device_token_request_sends_real_token(monkeypatch):
