@@ -96,8 +96,9 @@ class YandexMusicAPI:
             ).digest()
             params["sign"] = base64.b64encode(digest).decode()[:-1]
 
+            token = settings.ya_music_token.get_secret_value()
             headers = dict(MUSIC_CLIENT_HEADERS)
-            headers["Authorization"] = f"OAuth {settings.ya_music_token}"
+            headers["Authorization"] = f"OAuth {token}"
 
             timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:

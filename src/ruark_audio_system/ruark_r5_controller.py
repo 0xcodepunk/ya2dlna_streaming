@@ -42,7 +42,9 @@ class RuarkR5Controller:
         self._av_transport: Any = None
         self._connection_manager: Any = None
         self._rendering_control: Any = None
-        self._fsapi = RuarkFsApiClient(pin=settings.ruark_pin)
+        self._fsapi = RuarkFsApiClient(
+            pin=settings.ruark_pin.get_secret_value()
+        )
         self._location_store = RuarkLocationStore()
 
     @property
@@ -472,7 +474,7 @@ class RuarkR5Controller:
         """Получение session_id через fsapi.
 
         Raises:
-            RuarkApiError: Если ответ fsapi не содержит sessionId.
+            RuarkApiError: Если запрос fsapi не удался или нет sessionId.
         """
         return await self._fsapi.create_session()
 
@@ -480,7 +482,7 @@ class RuarkR5Controller:
         """Получение статуса питания ('1' — включено, '0' — выключено).
 
         Raises:
-            RuarkApiError: Если ответ fsapi не содержит статус питания.
+            RuarkApiError: Если запрос fsapi не удался или нет статуса.
         """
         return await self._fsapi.get_power_status()
 

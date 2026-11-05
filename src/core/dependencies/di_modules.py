@@ -69,7 +69,7 @@ class YandexMusicAPIModule(Module):
     @singleton
     @provider
     def provide_yandex_music_api(self) -> YandexMusicAPI:
-        client = ClientAsync(settings.ya_music_token)
+        client = ClientAsync(settings.ya_music_token.get_secret_value())
         return YandexMusicAPI(client=client)
 
 

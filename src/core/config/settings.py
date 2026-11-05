@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,10 +22,12 @@ class Settings(BaseSettings):
         env_file=resolve_env_path(),
         env_prefix="APP_",
         extra="ignore",
+        # Текст ошибки валидации не должен показывать токен и PIN из ввода
+        hide_input_in_errors=True,
     )
 
     # Yandex Music settings
-    ya_music_token: str
+    ya_music_token: SecretStr
 
     # API server settings
     local_server_host: str
@@ -32,7 +35,7 @@ class Settings(BaseSettings):
     local_server_port_api: int
 
     # Ruark R5 settings
-    ruark_pin: str
+    ruark_pin: SecretStr
     # Известный IP Ruark: быстрый старт без SSDP-скана всей сети
     ruark_host: str | None = None
 

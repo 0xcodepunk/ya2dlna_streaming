@@ -12,6 +12,8 @@ logger = getLogger(__name__)
 
 SESSION_ID_REGEX = re.compile(r"<sessionId>(.*?)</sessionId>")
 POWER_STATUS_REGEX = re.compile(r"<value><u8>(.*?)</u8></value>")
+# Строка запроса в тексте ошибок aiohttp: в ней PIN и идентификатор сессии
+URL_QUERY_REGEX = re.compile(r"\?\S*")
 
 
 class RuarkFsApiClient:
@@ -40,19 +42,28 @@ class RuarkFsApiClient:
         return self._ip
 
     async def _get(self, path: str) -> str:
-        """Выполняет GET-запрос к fsapi и возвращает тело ответа."""
+        """Выполняет GET-запрос к fsapi и возвращает тело ответа.
+
+        Raises:
+            RuarkApiError: Если запрос не удался; текст ошибки без PIN.
+        """
         url = f"http://{self._require_ip()}{path}"
         timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
-                response.raise_for_status()
-                return await response.text()
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as response:
+                    response.raise_for_status()
+                    return await response.text()
+        except aiohttp.ClientError as e:
+            # from None: цепочка причин показала бы исходный текст с PIN
+            message = URL_QUERY_REGEX.sub("", str(e))
+            raise RuarkApiError(f"Запрос fsapi не удался: {message}") from None
 
     async def create_session(self) -> str:
         """Создаёт сессию fsapi и запоминает session_id.
 
         Raises:
-            RuarkApiError: Если ответ не содержит sessionId.
+            RuarkApiError: Если запрос не удался или ответ без sessionId.
         """
         content = await self._get(f"/fsapi/CREATE_SESSION/?pin={self._pin}")
         match = SESSION_ID_REGEX.search(content)
@@ -67,7 +78,7 @@ class RuarkFsApiClient:
         """Получение статуса питания ('1' — включено, '0' — выключено).
 
         Raises:
-            RuarkApiError: Если ответ не содержит статус питания.
+            RuarkApiError: Если запрос не удался или ответ без статуса.
         """
         content = await self._get(
             f"/fsapi/GET/netRemote.sys.power"
@@ -90,11 +101,7 @@ class RuarkFsApiClient:
                 f"?pin={self._pin}&sid={self._session_id}&value={value}"
             )
             return await self.get_power_status() == str(value)
-        except (
-            aiohttp.ClientError,
-            RuarkApiError,
-            RuarkDeviceNotFoundError,
-        ) as e:
+        except (RuarkApiError, RuarkDeviceNotFoundError) as e:
             logger.error(f"Ошибка при переключении питания: {e}")
             return False
 
