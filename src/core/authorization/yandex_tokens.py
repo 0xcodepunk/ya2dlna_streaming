@@ -22,8 +22,9 @@ async def get_device_token(device_id: str, platform: str) -> str:
     url = "https://quasar.yandex.net/glagol/token"
     params = {"device_id": device_id, "platform": platform}
 
+    token = settings.ya_music_token.get_secret_value()
     headers = {
-        "Authorization": f"OAuth {settings.ya_music_token}",
+        "Authorization": f"OAuth {token}",
         "Content-Type": "application/json",
     }
 

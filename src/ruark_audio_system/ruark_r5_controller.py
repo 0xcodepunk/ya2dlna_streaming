@@ -42,7 +42,9 @@ class RuarkR5Controller:
         self._av_transport: Any = None
         self._connection_manager: Any = None
         self._rendering_control: Any = None
-        self._fsapi = RuarkFsApiClient(pin=settings.ruark_pin)
+        self._fsapi = RuarkFsApiClient(
+            pin=settings.ruark_pin.get_secret_value()
+        )
         self._location_store = RuarkLocationStore()
 
     @property
