@@ -23,7 +23,10 @@ class StationVolumeStore:
                 f"⚠️ Не удалось прочитать рабочий уровень станции: {e}"
             )
             return None
-        return volume if 0 < volume <= 1 else None
+        if 0 < volume <= 1:
+            return volume
+        logger.warning(f"⚠️ Сохранённый уровень станции не годится: {volume}")
+        return None
 
     def save(self, volume: float) -> None:
         """Сохраняет уровень для следующего запуска."""

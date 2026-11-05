@@ -228,6 +228,7 @@ async def test_loop_restart_keeps_working_volume_of_muted_station(
 
 
 def test_volume_store_roundtrip(tmp_path: Path):
+    """Сохранённый уровень читается обратно, без файла его нет."""
     store = StationVolumeStore(path=tmp_path / "volume.txt")
 
     assert store.load() is None
@@ -237,6 +238,7 @@ def test_volume_store_roundtrip(tmp_path: Path):
 
 @pytest.mark.parametrize("content", ["мусор", "0.0", "-0.3", "1.5"])
 def test_volume_store_ignores_impossible_level(tmp_path: Path, content: str):
+    """Мусор и значения вне диапазона считаются отсутствием уровня."""
     path = tmp_path / "volume.txt"
     path.write_text(content)
 

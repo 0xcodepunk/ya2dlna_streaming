@@ -194,7 +194,7 @@ class YandexStationControls:
                 self._level_unconfirmed = False
                 if self._mute_assumed:
                     logger.info(f"🔊 Станция на {level}, она не заглушена")
-                    self._clear_mute()
+                    self._forget_mute()
             return level
         except Exception as e:
             logger.error(f"❌ Ошибка при получении громкости: {e}")
@@ -207,7 +207,8 @@ class YandexStationControls:
 
     @working_volume.setter
     def working_volume(self, volume: float) -> None:
-        """Задаёт рабочий уровень; ноль не сохраняет, он стёр бы настоящий."""
+        """Задаёт рабочий уровень и сохраняет его для следующего процесса."""
+        # Ноль в файле стёр бы настоящий уровень
         if volume > 0 and volume != self._volume:
             self._volume_store.save(volume)
         self._volume = volume
@@ -231,20 +232,18 @@ class YandexStationControls:
             self._was_muted = True
             self._mute_assumed = True
             logger.info(
-                f"🔇 Станция на старте на {volume}, считаем её заглушённой "
-                f"прошлым сеансом: рабочий уровень {saved}"
+                f"🔇 Громкость станции на старте: {volume}, считаем её "
+                f"заглушённой прошлым сеансом, рабочий уровень {saved}"
             )
         elif volume is not None:
             self.working_volume = volume
         logger.info(f"Громкость по умолчанию: {self._volume}")
 
-    def _clear_mute(self) -> None:
-        """Снимает заглушку вместе с предположением о ней.
-
-        Оставшееся предположение позже сняло бы настоящую заглушку гашения:
-        станция сообщает отправленный ей уровень с задержкой.
-        """
+    def _forget_mute(self) -> None:
+        """Сбрасывает признак заглушки вместе с предположением о ней."""
         self._was_muted = False
+        # Станция сообщает отправленный ей уровень с задержкой: оставшееся
+        # предположение сняло бы по этому чтению настоящую заглушку гашения
         self._mute_assumed = False
 
     async def set_volume(self, volume: float):
@@ -258,7 +257,7 @@ class YandexStationControls:
                 }
             )
             if volume > 0:
-                self._clear_mute()
+                self._forget_mute()
         except Exception as e:
             logger.error(f"❌ Ошибка при установке громкости: {e}")
 
@@ -296,7 +295,7 @@ class YandexStationControls:
                     "volume": self._volume,
                 }
             )
-            self._clear_mute()
+            self._forget_mute()
             self._level_unconfirmed = True
             return True
         except Exception as e:
