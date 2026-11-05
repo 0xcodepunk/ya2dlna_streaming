@@ -355,7 +355,7 @@ class YandexStationControls:
             while v > min_volume and not await self.is_alice_active():
                 await self.set_volume(round(v, 1))
                 logger.info(f"  ➤ Устанавливаем громкость: {v:.1f}")
-                v -= step
+                v = round(v - step, 1)
                 await asyncio.sleep(delay)
             if v > min_volume:
                 logger.info("🎙 Алиса снова активна — гашение прервано")

@@ -188,6 +188,25 @@ async def test_fade_starts_from_current_volume(monkeypatch, volume):
     assert sent_volumes(controls)[0] == volume
 
 
+@pytest.mark.parametrize(
+    ("volume", "levels"),
+    [
+        (0.3, [0.3, 0.2, 0.1, 0.0]),
+        (0.4, [0.4, 0.3, 0.2, 0.1, 0.0]),
+        (0.6, [0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0]),
+        (1.0, [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0]),
+    ],
+)
+async def test_fade_sends_each_level_once(monkeypatch, volume, levels):
+    """Гашение проходит каждый уровень один раз, ноль не повторяется."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    controls = make_fading_controls(volume, ("IDLE",))
+
+    await controls.fade_out_alice_volume()
+
+    assert sent_volumes(controls) == levels
+
+
 async def test_unmute_reports_level_until_station_confirms(monkeypatch):
     """Пока станция не подтвердила уровень, unmute считает его своим."""
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
