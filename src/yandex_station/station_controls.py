@@ -13,6 +13,7 @@ from yandex_station.constants import (
 from yandex_station.models import Track
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_ws_control import YandexStationClient
+from yandex_station.volume_store import StationVolumeStore
 
 logger = getLogger(__name__)
 
@@ -33,7 +34,11 @@ class YandexStationControls:
         self._ws_client = ws_client
         self._protobuf = protobuf
         self._volume = 0
+        self._volume_store = StationVolumeStore()
         self._was_muted = False
+        # Заглушка не наша, а приписана прошлому сеансу по нулю или молчанию
+        # станции на старте: тот ноль мог быть устаревшим
+        self._mute_assumed = False
         # Уровень отправлен unmute, но станция ещё сообщает прежнюю громкость
         self._level_unconfirmed = False
 
@@ -187,6 +192,9 @@ class YandexStationControls:
             level = float(volume)
             if level > 0:
                 self._level_unconfirmed = False
+                if self._mute_assumed:
+                    logger.info(f"🔊 Станция на {level}, она не заглушена")
+                    self._clear_mute()
             return level
         except Exception as e:
             logger.error(f"❌ Ошибка при получении громкости: {e}")
@@ -199,7 +207,9 @@ class YandexStationControls:
 
     @working_volume.setter
     def working_volume(self, volume: float) -> None:
-        """Задаёт рабочий уровень громкости."""
+        """Задаёт рабочий уровень; ноль не сохраняет, он стёр бы настоящий."""
+        if volume > 0 and volume != self._volume:
+            self._volume_store.save(volume)
         self._volume = volume
 
     @property
@@ -215,9 +225,27 @@ class YandexStationControls:
             logger.info(f"Станция заглушена, рабочий уровень: {self._volume}")
             return
         volume = await self.get_volume()
-        if volume is not None:
-            self._volume = volume
+        saved = None if volume else self._volume_store.load()
+        if saved is not None:
+            self._volume = saved
+            self._was_muted = True
+            self._mute_assumed = True
+            logger.info(
+                f"🔇 Станция на старте на {volume}, считаем её заглушённой "
+                f"прошлым сеансом: рабочий уровень {saved}"
+            )
+        elif volume is not None:
+            self.working_volume = volume
         logger.info(f"Громкость по умолчанию: {self._volume}")
+
+    def _clear_mute(self) -> None:
+        """Снимает заглушку вместе с предположением о ней.
+
+        Оставшееся предположение позже сняло бы настоящую заглушку гашения:
+        станция сообщает отправленный ей уровень с задержкой.
+        """
+        self._was_muted = False
+        self._mute_assumed = False
 
     async def set_volume(self, volume: float):
         """Установка уровня громкости."""
@@ -230,7 +258,7 @@ class YandexStationControls:
                 }
             )
             if volume > 0:
-                self._was_muted = False
+                self._clear_mute()
         except Exception as e:
             logger.error(f"❌ Ошибка при установке громкости: {e}")
 
@@ -244,7 +272,7 @@ class YandexStationControls:
         if state not in ALICE_ACTIVE_STATES:
             volume = await self.get_volume()
             if volume is not None:
-                self._volume = volume
+                self.working_volume = volume
             await self._ws_client.send_command(
                 {"command": "setVolume", "volume": 0}
             )
@@ -268,7 +296,7 @@ class YandexStationControls:
                     "volume": self._volume,
                 }
             )
-            self._was_muted = False
+            self._clear_mute()
             self._level_unconfirmed = True
             return True
         except Exception as e:
@@ -309,7 +337,7 @@ class YandexStationControls:
                 "⚠️ Громкость станции неизвестна, fade out пропущен"
             )
             return None
-        self._volume = start_volume
+        self.working_volume = start_volume
         volume = round(start_volume - (start_volume % step), 1)
 
         logger.info(

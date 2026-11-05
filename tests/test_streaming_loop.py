@@ -22,7 +22,9 @@ from yandex_station.constants import (
     TRACK_SOURCE_TTL,
 )
 from yandex_station.models import Track
+from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
+from yandex_station.station_ws_control import YandexStationClient
 
 # Настоящий sleep сохраняется до подмены в фикстуре fast_sleep
 REAL_SLEEP = asyncio.sleep
@@ -1448,3 +1450,45 @@ async def test_volume_change_on_pause_is_not_voice_command(fast_sleep):
     ]
     # Голос Алисы остаётся таким, каким его сделали кнопкой
     assert station.working_volume == 0.2
+
+
+def make_restarted_manager(station_volume_file):
+    """Менеджер с настоящими контролами: API перезапущен посреди стрима."""
+    station_volume_file.write_text("0.6")
+    ws_client = AsyncMock(spec=YandexStationClient)
+    ws_client.running = False
+    ws_client.get_latest_message.return_value = {"state": {"volume": 0.0}}
+    station = YandexStationControls(
+        ws_client=ws_client, protobuf=MagicMock(spec=Protobuf)
+    )
+    manager = make_voice_manager(station, make_ruark())
+    manager._stop_stream_on_stream_server = AsyncMock()
+    return manager, ws_client
+
+
+async def test_restarted_api_counts_voice_volume_from_saved_level(
+    station_volume_file,
+):
+    """Первая реплика: станции вернулся уровень, от него считаются команды."""
+    manager, ws_client = make_restarted_manager(station_volume_file)
+    ctx = _CycleContext(last_track=make_track(), last_alice_state="IDLE")
+
+    await manager._prepare_devices()
+    await manager._duck_ruark_on_alice_speech("LISTENING", ctx)
+
+    assert ctx.reply_volume == 0.6
+    ws_client.send_command.assert_awaited_once_with(
+        {"command": "setVolume", "volume": 0.6}
+    )
+
+
+async def test_restarted_api_shutdown_restores_station(station_volume_file):
+    """/shutdown после перезапуска возвращает станции прежний уровень."""
+    manager, ws_client = make_restarted_manager(station_volume_file)
+
+    await manager._prepare_devices()
+    await manager.stop()
+
+    ws_client.send_command.assert_awaited_once_with(
+        {"command": "setVolume", "volume": 0.6}
+    )

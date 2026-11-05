@@ -1,9 +1,13 @@
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
+from yandex_station.volume_store import StationVolumeStore
 
 BASE_PLAYER_STATE = {
     "id": "42",
@@ -206,15 +210,193 @@ def report_volume(controls, volume):
     )
 
 
-async def test_loop_restart_keeps_working_volume_of_muted_station(monkeypatch):
-    """Перезапуск цикла не принимает ноль гашения за рабочий уровень."""
+@pytest.mark.parametrize("volume", [0.0, 0.1])
+async def test_loop_restart_keeps_working_volume_of_muted_station(
+    monkeypatch, volume
+):
+    """Перезапуск цикла не принимает след гашения за рабочий уровень."""
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
     controls = make_fading_controls(0.6, ("IDLE",))
     await controls.fade_out_alice_volume()
-    report_volume(controls, 0.0)
+    report_volume(controls, volume)
 
     await controls.set_default_volume()
 
     assert controls.working_volume == 0.6
     assert await controls.unmute()
     assert sent_volumes(controls)[-1] == 0.6
+
+
+def test_volume_store_roundtrip(tmp_path: Path):
+    store = StationVolumeStore(path=tmp_path / "volume.txt")
+
+    assert store.load() is None
+    store.save(0.6)
+    assert store.load() == 0.6
+
+
+@pytest.mark.parametrize("content", ["мусор", "0.0", "-0.3", "1.5"])
+def test_volume_store_ignores_impossible_level(tmp_path: Path, content: str):
+    path = tmp_path / "volume.txt"
+    path.write_text(content)
+
+    assert StationVolumeStore(path=path).load() is None
+
+
+def make_reporting_controls(volume):
+    """Контролы станции, сообщающей volume; None — сообщений ещё нет."""
+    controls = make_fading_controls(volume, ("IDLE",))
+    report_volume(controls, volume)
+    return controls
+
+
+@pytest.mark.parametrize("volume", [0.0, None])
+async def test_new_session_takes_saved_level_from_silent_station(
+    station_volume_file, volume
+):
+    """Ноль или молчание на старте: станцию заглушил прошлый сеанс."""
+    station_volume_file.write_text("0.6")
+    controls = make_reporting_controls(volume)
+
+    await controls.set_default_volume()
+
+    assert controls.working_volume == 0.6
+    assert await controls.unmute()
+    assert sent_volumes(controls) == [0.6]
+
+
+async def test_next_process_gets_level_of_previous(monkeypatch):
+    """Ctrl+C посреди стрима: новый процесс вернёт прежний уровень."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    previous = make_reporting_controls(0.6)
+    await previous.set_default_volume()
+    await previous.fade_out_alice_volume()
+
+    restarted = make_reporting_controls(0.0)
+    await restarted.set_default_volume()
+
+    assert await restarted.unmute()
+    assert sent_volumes(restarted) == [0.6]
+
+
+async def test_working_volume_saved_on_every_change(monkeypatch):
+    """Каждое изменение рабочего уровня переживает перезапуск."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    store = StationVolumeStore()
+    controls = make_reporting_controls(0.6)
+
+    await controls.set_default_volume()
+    assert store.load() == 0.6
+
+    report_volume(controls, 0.7)
+    await controls.mute()
+    assert store.load() == 0.7
+
+    await controls.unmute()
+    report_volume(controls, 0.5)
+    await controls.fade_out_alice_volume()
+    assert store.load() == 0.5
+
+    controls.working_volume = 0.4
+    assert store.load() == 0.4
+
+
+async def test_zero_does_not_erase_saved_level(monkeypatch):
+    """Ноль в рабочем уровне не стирает настоящий уровень в файле."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    store = StationVolumeStore()
+    controls = make_reporting_controls(0.0)
+    controls.working_volume = 0.6
+
+    controls.working_volume = 0.0
+    assert store.load() == 0.6
+
+    await controls.mute()
+    assert store.load() == 0.6
+
+    await controls.unmute()
+    await controls.fade_out_alice_volume()
+    assert store.load() == 0.6
+
+
+async def test_nonzero_read_drops_assumed_mute(
+    monkeypatch, station_volume_file
+):
+    """Ноль на старте был устаревшим: станцию гасим, иначе играла бы с Ruark."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    station_volume_file.write_text("0.6")
+    controls = make_reporting_controls(0.0)
+    await controls.set_default_volume()
+    assert await controls.fade_out_alice_volume() is None
+
+    report_volume(controls, 0.6)
+    await controls.get_volume()
+
+    assert await controls.fade_out_alice_volume() == 0.6
+    assert sent_volumes(controls)[-1] == 0.0
+
+
+async def test_nonzero_read_keeps_real_mute(monkeypatch):
+    """Устаревшее чтение сразу после гашения не снимает заглушку стрима."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    controls = make_reporting_controls(0.6)
+    await controls.fade_out_alice_volume()
+
+    await controls.get_volume()
+
+    assert await controls.fade_out_alice_volume() is None
+    assert await controls.unmute()
+    assert sent_volumes(controls)[-1] == 0.6
+
+
+@pytest.mark.parametrize(
+    "raise_level",
+    [
+        pytest.param(lambda controls: controls.unmute(), id="unmute"),
+        pytest.param(
+            lambda controls: controls.set_volume(0.6), id="set_volume"
+        ),
+    ],
+)
+async def test_late_push_keeps_mute_after_assumption_ended(
+    monkeypatch, station_volume_file, raise_level
+):
+    """Команда сняла предположение: поздний пуш её уровня заглушку не снимет."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    station_volume_file.write_text("0.6")
+    controls = make_reporting_controls(0.0)
+    await controls.set_default_volume()
+    await raise_level(controls)
+    # Станция ещё сообщает ноль, а гашение уже заглушило её по-настоящему
+    await controls.fade_out_alice_volume()
+
+    report_volume(controls, 0.6)
+    await controls.get_volume()
+
+    assert await controls.fade_out_alice_volume() is None
+
+
+@pytest.mark.parametrize(
+    "volume, expected", [(0.0, 0.0), (None, 0), (0.7, 0.7)]
+)
+async def test_without_saved_level_volume_comes_from_station(volume, expected):
+    """Сохранённого уровня нет: станция не считается заглушённой."""
+    controls = make_reporting_controls(volume)
+
+    await controls.set_default_volume()
+
+    assert controls.working_volume == expected
+    assert not await controls.unmute()
+    assert sent_volumes(controls) == []
+
+
+async def test_station_volume_replaces_saved_level(station_volume_file):
+    """Станция сообщила уровень: рабочим становится он, а не сохранённый."""
+    station_volume_file.write_text("0.6")
+    controls = make_reporting_controls(0.4)
+
+    await controls.set_default_volume()
+
+    assert controls.working_volume == 0.4
+    assert StationVolumeStore().load() == 0.4
+    assert not await controls.unmute()
