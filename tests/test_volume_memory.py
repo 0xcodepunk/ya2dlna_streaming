@@ -72,13 +72,50 @@ def make_manager(ruark_volume=20):
 
 
 async def test_prepare_devices_restores_saved_volume():
+    """Выключенный Ruark — обычный новый сеанс: уровень из файла."""
     manager, ruark = make_manager()
+    ruark.get_power_status.return_value = "0"
     manager._volume_store.load.return_value = 33
 
     await manager._prepare_devices()
 
+    ruark.turn_power_on.assert_awaited_once()
     ruark.set_volume.assert_awaited_with(33)
     assert manager._ruark_volume == 33
+
+
+async def test_prepare_devices_keeps_level_of_running_ruark():
+    """Включённый Ruark стоит на настоящем уровне: файл его не откатывает."""
+    manager, ruark = make_manager(ruark_volume=41)
+    manager._volume_store.load.return_value = 48
+
+    await manager._prepare_devices()
+
+    assert manager._ruark_volume == 41
+    ruark.set_volume.assert_not_awaited()
+
+
+async def test_prepare_devices_takes_file_when_ruark_is_ducked():
+    """Перезапуск API во время реплики: память пуста, остаётся файл."""
+    manager, ruark = make_manager(ruark_volume=RUARK_IDLE_VOLUME)
+    manager._volume_store.load.return_value = 48
+
+    await manager._prepare_devices()
+
+    assert manager._ruark_volume == 48
+    ruark.set_volume.assert_awaited_once_with(48)
+
+
+async def test_prepare_devices_takes_memory_when_ruark_is_ducked():
+    """Падение цикла во время реплики: память свежее файла."""
+    manager, ruark = make_manager(ruark_volume=RUARK_IDLE_VOLUME)
+    manager._ruark_volume = 41
+    manager._volume_store.load.return_value = 48
+
+    await manager._prepare_devices()
+
+    assert manager._ruark_volume == 41
+    ruark.set_volume.assert_awaited_once_with(41)
 
 
 async def test_prepare_devices_reads_current_volume_without_saved():
@@ -136,6 +173,7 @@ async def test_prepare_devices_lifts_silent_device_to_minimum():
 async def test_prepare_devices_keeps_quiet_but_audible_volume():
     """Тихое, но слышимое прослушивание не задирается до минимума."""
     manager, ruark = make_manager(ruark_volume=8)
+    ruark.get_power_status.return_value = "0"
     manager._volume_store.load.return_value = 8
 
     await manager._prepare_devices()
