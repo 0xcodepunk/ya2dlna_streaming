@@ -434,3 +434,79 @@ async def test_station_volume_replaces_saved_level(station_volume_file):
     assert controls.working_volume == 0.4
     assert StationVolumeStore().load() == 0.4
     assert not await controls.unmute()
+
+
+@pytest.mark.parametrize(
+    "first_read",
+    [pytest.param(None, id="сначала_молчание"), pytest.param(0.1, id="сразу")],
+)
+async def test_step_above_zero_does_not_replace_saved_level(
+    monkeypatch, station_volume_file, first_read
+):
+    """Станция на шаг выше нуля гасится, а рабочим остаётся прежний уровень."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    station_volume_file.write_text("0.6")
+    controls = make_reporting_controls(first_read)
+    await controls.set_default_volume()
+
+    report_volume(controls, 0.1)
+    await controls.get_volume()
+    await controls.fade_out_alice_volume()
+    report_volume(controls, 0.0)
+
+    assert sent_volumes(controls) == [0.1, 0.0]
+    assert await controls.unmute()
+    assert sent_volumes(controls)[-1] == 0.6
+    assert StationVolumeStore().load() == 0.6
+
+
+async def test_working_volume_ignores_step_above_zero_below_known_level():
+    """Шаг над нулём не заменяет более высокий рабочий уровень."""
+    controls = make_reporting_controls(0.6)
+    await controls.set_default_volume()
+
+    controls.working_volume = 0.1
+
+    assert controls.working_volume == 0.6
+    assert StationVolumeStore().load() == 0.6
+
+
+async def test_fade_accepts_level_above_one_step(monkeypatch):
+    """Уровень от двух шагов — выбор слушателя, гашение его принимает."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    controls = make_reporting_controls(0.6)
+    await controls.set_default_volume()
+
+    report_volume(controls, 0.2)
+    await controls.fade_out_alice_volume()
+
+    assert controls.working_volume == 0.2
+    assert StationVolumeStore().load() == 0.2
+
+
+@pytest.mark.parametrize("saved", [None, "0.1"])
+async def test_step_above_zero_accepted_without_higher_level(
+    station_volume_file, saved
+):
+    """Более высокого уровня нет: шаг над нулём становится рабочим."""
+    if saved is not None:
+        station_volume_file.write_text(saved)
+    controls = make_reporting_controls(0.1)
+
+    await controls.set_default_volume()
+
+    assert controls.working_volume == 0.1
+    assert not await controls.unmute()
+
+
+async def test_saved_step_above_zero_restored_from_silent_station(
+    station_volume_file,
+):
+    """Сохранённый шаг над нулём возвращается станции, как любой уровень."""
+    station_volume_file.write_text("0.1")
+    controls = make_reporting_controls(0.0)
+
+    await controls.set_default_volume()
+
+    assert await controls.unmute()
+    assert sent_volumes(controls) == [0.1]
