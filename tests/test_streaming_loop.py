@@ -7,15 +7,18 @@ import pytest
 
 from core.config.settings import settings
 from main_stream_service.main_stream_manager import (
+    RUARK_SILENT_PHRASE,
     MainStreamManager,
     _CycleContext,
 )
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
+from ruark_audio_system.exceptions import RuarkApiError, RuarkUnavailableError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     RUARK_IDLE_VOLUME,
     RUARK_MIN_VOICE_VOLUME,
+    RUARK_OUTAGE_PATIENCE,
     RUARK_VOLUME_PER_STATION_STEP,
     SILENT_RESEND_LIMIT,
     STREAM_POLL_INTERVAL,
@@ -1520,3 +1523,217 @@ async def test_restarted_api_shutdown_restores_station(station_volume_file):
     ws_client.send_command.assert_awaited_once_with(
         {"command": "setVolume", "volume": 0.6}
     )
+
+
+def unavailable() -> RuarkUnavailableError:
+    """Ошибка зависшего Ruark, как её отдаёт контроллер."""
+    return RuarkUnavailableError("Ruark не ответил на SetVolume: timed out")
+
+
+def scripted(*steps):
+    """Побочный эффект мока: шаги по очереди, последний повторяется."""
+    queue = list(steps)
+
+    async def step(*args):
+        item = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    return step
+
+
+def freeze_clock(monkeypatch) -> list[float]:
+    """Подменяет часы менеджера: тест двигает время сам."""
+    clock = [1000.0]
+    fake_time = MagicMock()
+    fake_time.monotonic.side_effect = lambda: clock[0]
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.time", fake_time
+    )
+    return clock
+
+
+def fail_volume_restore(ruark, times, on_failure=None):
+    """Приглушение проходит, а возврат громкости зависает times раз."""
+    failures = []
+
+    async def set_volume(volume):
+        if volume != RUARK_IDLE_VOLUME and len(failures) < times:
+            failures.append(volume)
+            if on_failure:
+                on_failure()
+            raise unavailable()
+
+    ruark.set_volume.side_effect = set_volume
+    return failures
+
+
+def make_reply_station():
+    """Станция, на которой Алиса ответила и замолчала, громкость прежняя."""
+    return make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.5},
+    )
+
+
+async def test_ruark_outage_keeps_loop_and_station_audible(fast_sleep):
+    """Зависший Ruark не роняет цикл, станция не гаснет до его ответа."""
+    station = make_reply_station()
+    ruark = make_ruark(volume=20)
+    fades_during_outage = []
+    fail_volume_restore(
+        ruark,
+        times=2,
+        on_failure=lambda: fades_during_outage.append(
+            station.fade_out_alice_volume.await_count
+        ),
+    )
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert fades_during_outage == [0, 0]
+    # После оживления громкость всё-таки вернулась, а поток не пересылался
+    assert ruark.set_volume.call_args_list[-1] == ((20,),)
+    assert manager._send_track_to_stream_server.call_count == 1
+
+
+async def test_ruark_outage_does_not_fake_progress_jump(
+    fast_sleep, monkeypatch
+):
+    """Простой цикла на таймаутах Ruark не выглядит перемоткой трека."""
+    clock = freeze_clock(monkeypatch)
+    station = make_reply_station()
+    previous = [make_track(id="1", progress=117.0)]
+
+    async def next_track():
+        # Сначала прошлый трек, дальше новый, который играет по часам
+        if previous:
+            return previous.pop()
+        return make_track(id="2", progress=clock[0] - 1000.0)
+
+    station.get_current_track.side_effect = next_track
+    ruark = make_ruark(volume=20)
+
+    def timeout_passed():
+        clock[0] += 10.0
+
+    failures = fail_volume_restore(ruark, 3, on_failure=timeout_passed)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+
+    assert len(failures) == 3
+    # Только отправка нового трека: сравнение с позицией прошлого трека
+    # дало бы ложный ресинк
+    assert manager._send_track_to_stream_server.call_count == 1
+    # 30 секунд зависания: голосом сообщать ещё не о чем
+    station.say.assert_not_called()
+
+
+async def test_ruark_outage_does_not_silence_alice_reply(fast_sleep):
+    """Реплику Алисы слышно, даже если Ruark не удалось приглушить."""
+    station = make_station_controls(
+        make_track(), alice_states=("IDLE", "LISTENING", "LISTENING")
+    )
+    ruark = make_ruark(volume=20)
+    # Чтение при подготовке проходит, чтение перед приглушением уже нет
+    ruark.get_volume.side_effect = scripted(20, unavailable())
+    manager = make_manager(station, ruark)
+
+    await drive_streaming(
+        manager, until=lambda: station.unmute.await_count > 0
+    )
+
+    station.unmute.assert_awaited()
+
+
+async def test_long_ruark_outage_announced_once(fast_sleep, monkeypatch):
+    """Затянувшуюся недоступность объявляет один раз и возвращает звук."""
+    clock = freeze_clock(monkeypatch)
+    station = make_reply_station()
+    ruark = make_ruark(volume=20)
+
+    def half_patience_passed():
+        clock[0] += RUARK_OUTAGE_PATIENCE / 2
+
+    fail_volume_restore(ruark, times=1000, on_failure=half_patience_passed)
+    manager = make_voice_manager(station, ruark)
+
+    await drive_streaming(manager, until=lambda: False, timeout=0.1)
+
+    station.say.assert_awaited_once_with(RUARK_SILENT_PHRASE)
+    station.unmute.assert_awaited()
+    station.fade_out_alice_volume.assert_not_awaited()
+
+
+async def test_ruark_outage_clock_restarts_after_recovery(monkeypatch):
+    """Новое зависание после оживления считается с нуля."""
+    clock = freeze_clock(monkeypatch)
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+
+    await manager._note_ruark_outage(unavailable())
+    manager._clear_ruark_outage()
+    clock[0] += RUARK_OUTAGE_PATIENCE
+    await manager._note_ruark_outage(unavailable())
+
+    station.say.assert_not_called()
+
+
+async def test_ruark_outage_clock_restarts_after_stop(monkeypatch):
+    """Зависание прошлого сеанса не объявляется в следующем."""
+    clock = freeze_clock(monkeypatch)
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+    manager._stop_stream_on_stream_server = AsyncMock()
+    manager._volume_store = MagicMock()
+
+    await manager._note_ruark_outage(unavailable())
+    await manager.stop()
+    clock[0] += RUARK_OUTAGE_PATIENCE
+    await manager._note_ruark_outage(unavailable())
+
+    station.say.assert_not_called()
+
+
+async def test_prepare_waits_for_hung_ruark(fast_sleep):
+    """Подготовка дожидается ответа Ruark и берёт его уровень."""
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.get_volume.side_effect = scripted(unavailable(), unavailable(), 39)
+    manager = make_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: manager._send_track_to_stream_server.await_count > 0,
+    )
+
+    assert ruark.get_volume.await_count == 3
+    assert manager._ruark_volume == 39
+    station.say.assert_not_called()
+
+
+async def test_prepare_waits_for_rebooting_ruark(fast_sleep):
+    """Пока Ruark перезагружается и fsapi недоступен, цикл не падает."""
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.get_session_id.side_effect = scripted(
+        RuarkApiError("Запрос fsapi не удался: Cannot connect"), "sid"
+    )
+    manager = make_manager(station, ruark)
+
+    await drive_streaming(
+        manager,
+        until=lambda: manager._send_track_to_stream_server.await_count > 0,
+    )
+
+    assert ruark.get_session_id.await_count == 2
+    station.say.assert_not_called()

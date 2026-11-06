@@ -10,7 +10,11 @@ from injector import inject
 
 from core.config.settings import settings
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
-from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
+from ruark_audio_system.exceptions import (
+    RuarkApiError,
+    RuarkDeviceNotFoundError,
+    RuarkUnavailableError,
+)
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from ruark_audio_system.volume_store import RuarkVolumeStore
 from yandex_station.constants import (
@@ -20,6 +24,7 @@ from yandex_station.constants import (
     RUARK_MAX_VOLUME,
     RUARK_MIN_START_VOLUME,
     RUARK_MIN_VOICE_VOLUME,
+    RUARK_OUTAGE_PATIENCE,
     RUARK_VOLUME_PER_STATION_STEP,
     SILENCE_CHECK_INTERVAL,
     SILENCE_RESEND_GRACE,
@@ -121,6 +126,9 @@ class MainStreamManager:
         self._shutdown_task: asyncio.Task[None] | None = None
         self._source_cache: dict[str, tuple[TrackSource, float]] = {}
         self._prefetch_tasks: dict[str, asyncio.Task[None]] = {}
+        # Начало текущей недоступности Ruark (time.monotonic)
+        self._ruark_outage_started_at: float | None = None
+        self._ruark_outage_announced = False
 
     async def start(self):
         """Запуск всех стриминговых процессов."""
@@ -171,6 +179,7 @@ class MainStreamManager:
         """
         logger.info("🛑 Остановка стриминга...")
         self._stream_state_running = False
+        self._ruark_outage_started_at = None
         await self._remember_ruark_volume()
         await self._safe_stop_step(self._ruark_controls.stop)
         await self._safe_stop_step(self._stop_stream_on_stream_server)
@@ -218,7 +227,7 @@ class MainStreamManager:
         """Основной поток управления стримингом."""
         try:
             logger.info("📡 Поток streaming() стартовал")
-            await self._prepare_devices()
+            await self._prepare_devices_patiently()
 
             ctx = _CycleContext(
                 last_track=Track(
@@ -254,7 +263,14 @@ class MainStreamManager:
                 await self._duck_ruark_on_alice_speech(alice_state, ctx)
 
                 if alice_state == "IDLE":
-                    track = await self._handle_idle_cycle(track, ctx)
+                    try:
+                        track = await self._handle_idle_cycle(track, ctx)
+                        self._clear_ruark_outage()
+                    except RuarkUnavailableError as e:
+                        # Итерация прервана до гашения: станцию слышно, пока
+                        # Ruark молчит. Снимок прогресса ниже обновляется и
+                        # здесь, иначе простой выглядел бы как перемотка
+                        await self._note_ruark_outage(e)
 
                 await self._unmute_before_track_end(track, alice_state)
 
@@ -290,12 +306,8 @@ class MainStreamManager:
         if alice_state in ALICE_ACTIVE_STATES and ctx.volume_set_count < 1:
             ctx.volume_set_count += 1
             ctx.speak_count += 1
-
-            self._remember_ruark_volume_level(
-                await self._ruark_controls.get_volume()
-            )
             ctx.restored_volume = None
-            await self._ruark_controls.set_volume(RUARK_IDLE_VOLUME)
+            await self._quiet_ruark_for_speech()
 
             working = self._station_controls.working_volume
             # Станцию, заглушённую стримом, unmute возвращает на рабочий
@@ -310,6 +322,53 @@ class MainStreamManager:
                     f"🔊 Станция перед репликой на {ctx.reply_volume}, "
                     f"рабочий уровень {working}"
                 )
+
+    async def _quiet_ruark_for_speech(self) -> None:
+        """Приглушает Ruark на реплику Алисы, если он отвечает.
+
+        Зависший Ruark и так молчит, а реплику слышно только после
+        unmute станции: ошибка колонки не должна его отменять.
+        """
+        try:
+            self._remember_ruark_volume_level(
+                await self._ruark_controls.get_volume()
+            )
+            await self._ruark_controls.set_volume(RUARK_IDLE_VOLUME)
+        except RuarkUnavailableError as e:
+            await self._note_ruark_outage(e)
+
+    async def _note_ruark_outage(self, error: Exception) -> None:
+        """Учитывает недоступность Ruark, объявляя только затянувшуюся.
+
+        Args:
+            error (Exception): Ошибка команды, для лога.
+        """
+        now = time.monotonic()
+        if self._ruark_outage_started_at is None:
+            self._ruark_outage_started_at = now
+            self._ruark_outage_announced = False
+            logger.warning(f"⚠️ Ruark не отвечает, цикл ждёт его: {error}")
+            return
+        if (
+            self._ruark_outage_announced
+            or now - self._ruark_outage_started_at < RUARK_OUTAGE_PATIENCE
+        ):
+            return
+        self._ruark_outage_announced = True
+        logger.error(
+            f"❌ Ruark не отвечает дольше "
+            f"{RUARK_OUTAGE_PATIENCE:.0f} с: {error}"
+        )
+        await self._safe_stop_step(self._station_controls.unmute)
+        await self._announce_error(RUARK_SILENT_PHRASE)
+
+    def _clear_ruark_outage(self) -> None:
+        """Отмечает, что Ruark снова отвечает."""
+        if self._ruark_outage_started_at is None:
+            return
+        outage = time.monotonic() - self._ruark_outage_started_at
+        logger.info(f"✅ Ruark снова отвечает, молчал {outage:.0f} с")
+        self._ruark_outage_started_at = None
 
     async def _handle_idle_cycle(
         self, track: Track, ctx: "_CycleContext"
@@ -957,6 +1016,21 @@ class MainStreamManager:
             )
             return
         self._volume_store.save(self._ruark_volume)
+
+    async def _prepare_devices_patiently(self) -> None:
+        """Готовит устройства, дожидаясь Ruark без падения цикла.
+
+        Пока Ruark завис или перезагружается, звук остаётся на станции;
+        уровень громкости выбирается, когда колонка снова отвечает.
+        """
+        while self._stream_state_running:
+            try:
+                await self._prepare_devices()
+                self._clear_ruark_outage()
+                return
+            except (RuarkApiError, RuarkUnavailableError) as e:
+                await self._note_ruark_outage(e)
+                await asyncio.sleep(STREAMING_RESTART_DELAY)
 
     async def _prepare_devices(self):
         logger.info("🔧 Подготовка устройств к стримингу...")
