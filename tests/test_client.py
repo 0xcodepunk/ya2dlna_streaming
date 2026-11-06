@@ -174,3 +174,16 @@ async def test_wait_for_state_update_consumes_pending_notification(
         await mock_station_client.wait_for_state_update(timeout=0.05) is True
     )
     assert not mock_station_client.state_updated.is_set()
+
+
+async def test_close_forgets_station_messages(mock_station_client):
+    """Новый сеанс не читает сообщения прошлого и ждёт свежее."""
+    mock_station_client.queue.append({"state": {"volume": 0.1}})
+    mock_station_client.state_updated.set()
+
+    await mock_station_client.close()
+
+    assert await mock_station_client.get_latest_message() is None
+    assert (
+        await mock_station_client.wait_for_state_update(timeout=0.01) is False
+    )
