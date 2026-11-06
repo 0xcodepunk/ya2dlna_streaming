@@ -13,6 +13,16 @@ def station_volume_file(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def ruark_volume_file(tmp_path, monkeypatch):
+    """Файл громкости Ruark: тесты не трогают настоящий cache/."""
+    path = tmp_path / "ruark_volume.txt"
+    monkeypatch.setattr(
+        "ruark_audio_system.volume_store.DEFAULT_STORE_PATH", path
+    )
+    return path
+
+
 @pytest.fixture
 def mock_finder():
     """Мок DeviceFinder с найденной станцией."""
