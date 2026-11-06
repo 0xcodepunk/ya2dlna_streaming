@@ -855,6 +855,34 @@ def make_voice_manager(station, ruark):
     return manager
 
 
+async def test_streaming_restart_keeps_voice_volume_on_ruark(fast_sleep):
+    """Перезапуск цикла не откатывает «тише» к уровню из файла."""
+    station = make_voice_station(
+        alice_states=("IDLE", "LISTENING", "IDLE"),
+        volume_by_state={"LISTENING": 0.0, "IDLE": 0.4},
+    )
+    ruark = make_ruark(volume=48)
+
+    # Колонка помнит последнюю команду, как настоящая
+    async def remember_volume(volume):
+        ruark.get_volume.return_value = volume
+
+    ruark.set_volume.side_effect = remember_volume
+    manager = make_voice_manager(station, ruark)
+    manager._volume_store.load.return_value = 48
+    quieter = 48 - RUARK_VOLUME_PER_STATION_STEP
+
+    await drive_streaming(
+        manager,
+        until=lambda: station.fade_out_alice_volume.await_count > 0,
+    )
+    # Новый запуск streaming() — то, что делает _wrap_streaming при падении
+    await drive_streaming(manager, until=lambda: True)
+
+    assert ruark.get_volume.return_value == quieter
+    assert manager._ruark_volume == quieter
+
+
 async def test_voice_volume_up_moves_to_ruark(fast_sleep):
     """«Алиса, громче» во время трека прибавляет Ruark, а не станцию."""
     # Станция замьючена стримом, unmute перед репликой вернул ей 0.5,

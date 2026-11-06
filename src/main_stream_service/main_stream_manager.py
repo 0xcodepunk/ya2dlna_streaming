@@ -967,7 +967,45 @@ class MainStreamManager:
         await self._ruark_controls.get_session_id()
         if await self._ruark_controls.get_power_status() == "0":
             await self._ruark_controls.turn_power_on()
+            await self._restore_saved_ruark_volume()
+        else:
+            await self._resolve_running_ruark_volume()
 
+        if self._ruark_volume <= RUARK_IDLE_VOLUME:
+            # Ни снапшота, ни звука на колонке — поднимаем до слышимого
+            # минимума, иначе стрим стартует в полной тишине
+            self._ruark_volume = RUARK_MIN_START_VOLUME
+            await self._ruark_controls.set_volume(RUARK_MIN_START_VOLUME)
+            logger.info(
+                f"🔊 Ruark стоял на тишине — стартовая громкость "
+                f"поднята до {RUARK_MIN_START_VOLUME}"
+            )
+
+    async def _resolve_running_ruark_volume(self) -> None:
+        """Выбирает уровень включённого Ruark: устройство, память, файл."""
+        volume = await self._ruark_controls.get_volume()
+        if volume > RUARK_IDLE_VOLUME:
+            # Перезапуск API и падение цикла колонку не трогают: на ней
+            # настоящий уровень, чем бы его ни меняли
+            self._ruark_volume = volume
+            logger.info(
+                f"🔊 Ruark уже включён, громкость взята с устройства: "
+                f"{volume}"
+            )
+        elif self._ruark_volume > RUARK_IDLE_VOLUME:
+            # Цикл упал во время реплики: Ruark приглушён, а в памяти
+            # уровень до приглушения с голосовыми правками, он свежее файла
+            await self._ruark_controls.set_volume(self._ruark_volume)
+            logger.info(
+                f"🔊 Ruark приглушён прерванной репликой, громкость "
+                f"возвращена из памяти: {self._ruark_volume}"
+            )
+        else:
+            # Процесс перезапущен во время реплики: память пуста
+            await self._restore_saved_ruark_volume()
+
+    async def _restore_saved_ruark_volume(self) -> None:
+        """Ставит на Ruark громкость из файла, без неё читает устройство."""
         saved_volume = self._volume_store.load()
         if saved_volume is not None and saved_volume > RUARK_IDLE_VOLUME:
             # Восстанавливаем громкость прошлого сеанса
@@ -982,16 +1020,6 @@ class MainStreamManager:
             # нулём в прошлом сеансе
             self._remember_ruark_volume_level(
                 await self._ruark_controls.get_volume()
-            )
-
-        if self._ruark_volume <= RUARK_IDLE_VOLUME:
-            # Ни снапшота, ни звука на колонке — поднимаем до слышимого
-            # минимума, иначе стрим стартует в полной тишине
-            self._ruark_volume = RUARK_MIN_START_VOLUME
-            await self._ruark_controls.set_volume(RUARK_MIN_START_VOLUME)
-            logger.info(
-                f"🔊 Ruark стоял на тишине — стартовая громкость "
-                f"поднята до {RUARK_MIN_START_VOLUME}"
             )
 
     async def _send_track_to_stream_server(
