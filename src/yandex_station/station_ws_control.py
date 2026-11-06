@@ -647,6 +647,10 @@ class YandexStationClient:
             self._connect_task = None
             logger.info("✅ Задача подключения к станции отменена")
 
+        # Иначе новый сеанс в этом процессе прочитает состояние прошлого
+        self.queue.clear()
+        self.state_updated.clear()
+
     def _log_software_version(self, software_version: str):
         """Логирует версию ПО станции в файл, если она изменилась."""
         try:

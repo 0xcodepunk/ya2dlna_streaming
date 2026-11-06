@@ -209,10 +209,29 @@ class YandexStationControls:
     @working_volume.setter
     def working_volume(self, volume: float) -> None:
         """Задаёт рабочий уровень и сохраняет его для следующего процесса."""
+        # Побывав на нуле, станция сообщает шаг над ним: это не выбор
+        # слушателя, и прежний уровень он затирать не должен
+        if volume > 0 and self._is_mute_trace(volume, self._volume):
+            logger.info(
+                f"🔇 Уровень {volume} не принят, рабочий {self._volume}"
+            )
+            return
         # Ноль в файле стёр бы настоящий уровень
         if volume > 0 and volume != self._volume:
             self._volume_store.save(volume)
         self._volume = volume
+
+    @staticmethod
+    def _is_mute_trace(volume: float, level: float) -> bool:
+        """Проверяет, что громкость — след заглушения, а не выбор слушателя.
+
+        Args:
+            volume (float): Прочитанная громкость станции.
+            level (float): Известный рабочий уровень.
+        Returns:
+            bool: True, если громкость не выше шага, а уровень выше него.
+        """
+        return volume <= STATION_VOLUME_STEP < level
 
     @property
     def level_unconfirmed(self) -> bool:
@@ -227,8 +246,10 @@ class YandexStationControls:
             logger.info(f"Станция заглушена, рабочий уровень: {self._volume}")
             return
         volume = await self.get_volume()
-        saved = None if volume else self._volume_store.load()
-        if saved is not None:
+        saved = self._volume_store.load()
+        if saved is not None and (
+            not volume or self._is_mute_trace(volume, saved)
+        ):
             self._volume = saved
             self._was_muted = True
             self._mute_assumed = True
