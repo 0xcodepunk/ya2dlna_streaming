@@ -18,3 +18,8 @@ META_INFO = """<?xml version="1.0" encoding="utf-8"?>
 
 # Заголовок потока по умолчанию, когда метаданные трека неизвестны
 DEFAULT_STREAM_TITLE = "Internet Radio"
+
+# Режим покоя Ruark: id из netRemote.sys.caps.validModes. Ruark
+# просыпается в последнем выбранном режиме источника, и из Internet radio
+# первый поток после включения ждёт до минуты, а Line in в сеть не ходит
+RUARK_RESTING_MODE = "AUXIN"
