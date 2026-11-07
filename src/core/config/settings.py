@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     prefer_lossless: bool = True
     # «Алиса, громче» и «тише» во время стрима меняют громкость Ruark
     voice_volume_to_ruark: bool = True
+    # Пауза дольше стольких минут выключает стрим, 0 — никогда
+    idle_shutdown_minutes: float = 60.0
 
 
 settings = Settings()

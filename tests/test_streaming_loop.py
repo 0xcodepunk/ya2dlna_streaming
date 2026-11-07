@@ -610,6 +610,87 @@ async def test_powered_off_ruark_stops_streaming(fast_sleep, monkeypatch):
     station.unmute.assert_called()
 
 
+async def test_long_pause_stops_streaming_with_sleeping_ruark(
+    fast_sleep, monkeypatch
+):
+    """Пауза дольше интервала выключает стрим, даже если Ruark уснул."""
+    monkeypatch.setattr(settings, "idle_shutdown_minutes", 0.001)
+    station = make_station_controls(make_track(playing=False))
+    ruark = make_ruark()
+    # Ruark ушёл в штатное автовыключение и не отвечает на команды
+    ruark.stop.side_effect = RuarkUnavailableError("Ruark не ответил: Stop")
+    manager = make_manager(station, ruark)
+    manager._stop_stream_on_stream_server = AsyncMock()
+
+    await drive_streaming(
+        manager, until=lambda: manager._shutdown_task is not None
+    )
+
+    assert manager._shutdown_task is not None, "стрим не выключился"
+    await manager._shutdown_task
+    assert manager._stream_state_running is False
+    station.unmute.assert_called()
+
+
+def make_idle_manager():
+    """Менеджер для проверок простоя с подменённой остановкой."""
+    manager = make_manager(make_station_controls(make_track()), make_ruark())
+    manager.stop = AsyncMock()
+    return manager
+
+
+def make_idle_ctx(idle_minutes: float) -> _CycleContext:
+    """Контекст цикла, в котором станция не играет заданное число минут."""
+    return _CycleContext(
+        last_track=make_track(playing=False),
+        last_alice_state="IDLE",
+        idle_since=time.monotonic() - idle_minutes * 60,
+    )
+
+
+async def test_pause_longer_than_limit_stops_streaming(monkeypatch):
+    """Остановка запускается только после полного интервала паузы."""
+    monkeypatch.setattr(settings, "idle_shutdown_minutes", 60)
+    manager = make_idle_manager()
+    paused = make_track(playing=False)
+
+    manager._shutdown_if_idle(paused, make_idle_ctx(59))
+    assert manager._shutdown_task is None
+
+    manager._shutdown_if_idle(paused, make_idle_ctx(61))
+    assert manager._shutdown_task is not None
+    await manager._shutdown_task
+    manager.stop.assert_awaited_once()
+
+
+async def test_resume_resets_idle_timer(monkeypatch):
+    """Возобновление до истечения интервала сбрасывает таймер."""
+    monkeypatch.setattr(settings, "idle_shutdown_minutes", 60)
+    manager = make_idle_manager()
+    ctx = make_idle_ctx(59)
+
+    manager._shutdown_if_idle(make_track(playing=True), ctx)
+    # Новая пауза считается с нуля: две минуты, а не час с лишним
+    manager._shutdown_if_idle(make_track(playing=False), ctx)
+    assert ctx.idle_since is not None
+    ctx.idle_since -= 2 * 60
+    manager._shutdown_if_idle(make_track(playing=False), ctx)
+
+    assert manager._shutdown_task is None
+
+
+async def test_zero_idle_limit_never_stops_streaming(monkeypatch):
+    """Интервал ноль отключает автовыключение."""
+    monkeypatch.setattr(settings, "idle_shutdown_minutes", 0)
+    manager = make_idle_manager()
+
+    manager._shutdown_if_idle(
+        make_track(playing=False), make_idle_ctx(24 * 60)
+    )
+
+    assert manager._shutdown_task is None
+
+
 async def test_next_track_prefetched_in_background(fast_sleep):
     """Ссылка следующего трека резолвится фоном, пока играет текущий."""
     track = make_track(next_id="43")
