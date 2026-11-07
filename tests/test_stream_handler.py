@@ -251,6 +251,27 @@ async def test_radio_declared_as_mpeg_in_didl(fast_sleep):
     await handler.stop_ffmpeg()
 
 
+async def test_radio_copied_to_adts_without_reencode(monkeypatch):
+    """Радио: FFmpeg копирует AAC вещателя в ADTS без перекодирования."""
+    launched = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*command, **kwargs):
+        # Настоящего FFmpeg на CI нет: запоминаем команду, запускаем заглушку
+        launched.append(list(command))
+        return await real_exec("sleep", "30", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    handler, _ = make_handler()
+
+    await handler.start_ffmpeg_stream("http://example/master.m3u8", radio=True)
+
+    command = launched[-1]
+    assert command[command.index("-c:a") + 1] == "copy"
+    assert command[command.index("-f") + 1] == "adts"
+    await handler.stop_ffmpeg()
+
+
 async def test_flac_codec_selects_flac_params_and_mime():
     handler, ruark = make_handler()
     # Фейковая команда: на CI-раннере нет ffmpeg
