@@ -76,7 +76,8 @@ class _CycleContext:
     stuck_track_count: int = 0
     volume_set_count: int = 0
     speak_count: int = 0
-    track_url: str | None = None
+    # Источник текущего потока: пересылки берут из него ссылку и кодек
+    track_source: TrackSource | None = None
     last_log_signature: tuple[str, bool, str | None] | None = None
     # Момент последней отправки потока (time.monotonic)
     last_stream_sent_at: float = 0.0
@@ -686,7 +687,7 @@ class MainStreamManager:
             logger.warning("⚠️ Не удалось получить URL трека для ресинка")
             return
 
-        ctx.track_url = source.url
+        ctx.track_source = source
         ctx.last_track = track
         ctx.last_stream_sent_at = time.monotonic()
         await self._send_track_to_stream_server(
@@ -714,17 +715,18 @@ class MainStreamManager:
             return
 
         switch_started = time.monotonic()
-        codec = "mp3"
         if track.type == "FmRadio":
-            ctx.track_url = await self._station_controls.get_radio_url()
-            logger.info(f"🎵 URL радиостанции: {ctx.track_url}")
+            radio_url = await self._station_controls.get_radio_url()
+            logger.info(f"🎵 URL радиостанции: {radio_url}")
+            # Кодек радио выбирает DLNA-сервер, это значение он не читает
+            ctx.track_source = (
+                TrackSource(url=radio_url, codec="mp3") if radio_url else None
+            )
         else:
-            source = await self._resolve_track_source(track.id)
-            ctx.track_url = source.url if source else None
-            codec = source.codec if source else "mp3"
+            ctx.track_source = await self._resolve_track_source(track.id)
         resolve_seconds = time.monotonic() - switch_started
 
-        if ctx.track_url:
+        if ctx.track_source:
             start_position = 0.0
             if (
                 track.type != "FmRadio"
@@ -738,12 +740,12 @@ class MainStreamManager:
             send_started = time.monotonic()
             ctx.last_stream_sent_at = send_started
             await self._send_track_to_stream_server(
-                ctx.track_url,
+                ctx.track_source.url,
                 radio=track.type == "FmRadio",
                 start_position=start_position,
                 title=track.title,
                 artist=track.artist,
-                codec=codec,
+                codec=ctx.track_source.codec,
             )
             logger.info(
                 f"⏱ Переключение на {track.id}: ссылка "
@@ -796,18 +798,19 @@ class MainStreamManager:
                     "⚠️ Ruark так и не начал играть, "
                     "перезапуск трека на стрим сервере"
                 )
-                if ctx.track_url:
+                if ctx.track_source:
                     # Для трека продолжаем с текущей позиции станции,
                     # а не с начала — иначе рассинхрон
                     ctx.last_stream_sent_at = time.monotonic()
                     await self._send_track_to_stream_server(
-                        ctx.track_url,
+                        ctx.track_source.url,
                         radio=track.type == "FmRadio",
                         start_position=(
                             track.progress if track.type != "FmRadio" else 0.0
                         ),
                         title=track.title,
                         artist=track.artist,
+                        codec=ctx.track_source.codec,
                     )
                 else:
                     logger.warning(

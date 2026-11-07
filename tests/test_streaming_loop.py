@@ -1420,6 +1420,28 @@ async def test_new_reply_interrupts_wait_for_ruark(fast_sleep):
     assert manager._send_track_to_stream_server.call_count == 1
 
 
+async def test_restart_after_reply_keeps_source_codec(fast_sleep):
+    """Перезапуск трека после реплики несёт кодек исходного источника."""
+    # Трек без MP3 играет через lossless, а Ruark после реплики молчит
+    station = make_voice_station(
+        alice_states=("IDLE", "SPEAKING", "IDLE"),
+        volume_by_state={"SPEAKING": 0.5, "IDLE": 0.5},
+        track=make_track(progress=50.0),
+    )
+    manager = make_voice_manager(station, make_ruark(is_playing=False))
+    manager._yandex_music_api.get_track_source.return_value = TrackSource(
+        url="http://track/flac", codec="flac"
+    )
+    send = manager._send_track_to_stream_server
+
+    await drive_streaming(manager, until=lambda: send.call_count >= 2)
+
+    restart_call = send.call_args_list[1]
+    assert restart_call.args[0] == "http://track/flac"
+    assert restart_call.kwargs["codec"] == "flac"
+    assert restart_call.kwargs["start_position"] == pytest.approx(50.0)
+
+
 async def test_voice_volume_down_disabled_lowers_station_only(
     fast_sleep, monkeypatch
 ):
