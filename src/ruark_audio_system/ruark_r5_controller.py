@@ -10,7 +10,10 @@ import upnpclient.soap
 
 from core.config.settings import settings
 from ruark_audio_system.constants import DEFAULT_STREAM_TITLE, META_INFO
-from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
+from ruark_audio_system.exceptions import (
+    RuarkDeviceNotFoundError,
+    RuarkUnavailableError,
+)
 from ruark_audio_system.fsapi_client import RuarkFsApiClient
 from ruark_audio_system.location_store import RuarkLocationStore
 from ruark_audio_system.ssdp import ssdp_locate
@@ -78,6 +81,21 @@ class RuarkR5Controller:
                 f"сервис {name} недоступен, вызовите connect()"
             )
         return service
+
+    async def _call_upnp(self, action: Any, **kwargs: Any) -> Any:
+        """Выполняет UPnP-команду, переводя сетевой сбой в своё исключение.
+
+        Raises:
+            RuarkUnavailableError: Если Ruark завис или недоступен в сети.
+        """
+        try:
+            return await asyncio.to_thread(action, **kwargs)
+        except OSError as e:
+            # Ошибки requests, на котором работает upnpclient, наследуют
+            # OSError; отказ самого устройства (SOAPError) проходит насквозь
+            raise RuarkUnavailableError(
+                f"Ruark не ответил на {action.name}: {e}"
+            ) from e
 
     async def connect(self, attempts: int = 3, delay: float = 2.0) -> bool:
         """Ищет устройство в сети с несколькими попытками.
@@ -328,7 +346,7 @@ class RuarkR5Controller:
         """Остановка воспроизведения."""
         playing = await self.is_playing()
         if playing:
-            await asyncio.to_thread(self.av_transport.Stop, InstanceID=0)
+            await self._call_upnp(self.av_transport.Stop, InstanceID=0)
             logger.info("⏹ Воспроизведение остановлено")
 
     async def next_track(self) -> None:
@@ -396,14 +414,14 @@ class RuarkR5Controller:
     #   RenderingControl
     async def get_volume(self) -> int:
         """Получение текущего уровня громкости."""
-        result = await asyncio.to_thread(
+        result = await self._call_upnp(
             self.rendering_control.GetVolume, InstanceID=0, Channel="Master"
         )
         return result["CurrentVolume"]
 
     async def set_volume(self, volume: int) -> None:
         """Установка громкости (0-100)."""
-        await asyncio.to_thread(
+        await self._call_upnp(
             self.rendering_control.SetVolume,
             InstanceID=0,
             Channel="Master",
