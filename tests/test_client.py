@@ -33,6 +33,38 @@ def connected_client(mock_station_client):
     return client
 
 
+@pytest.fixture
+def found_client(mock_station_client):
+    """Клиент с найденной станцией и токеном, готовый к connect()."""
+    client = mock_station_client
+    client.device_id = "dummy_id"
+    client.platform = "dummy_platform"
+    client.uri = "wss://localhost:1234"
+    client.device_token = DEVICE_TOKEN
+    return client
+
+
+def record_sleeps(monkeypatch, cancel_on=None):
+    """Подменяет asyncio.sleep: копит паузы, на cancel_on-й обрывает цикл."""
+    delays = []
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+        if len(delays) == cancel_on:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return delays
+
+
+def stub_session_tasks(client):
+    """Фоновые задачи сеанса завершаются сразу и не трогают asyncio.sleep."""
+    client.stream_station_messages = AsyncMock()
+    client.command_producer_handler = AsyncMock()
+    client.keep_alive_ws_connection = AsyncMock()
+    client.clean_expired_futures = AsyncMock()
+
+
 async def send_through_producer(client, command):
     """Отправляет команду через очередь и останавливает отправителя."""
     producer = asyncio.create_task(client.command_producer_handler())
@@ -87,14 +119,10 @@ async def test_ping_frame_logged_at_debug(
 
 @pytest.mark.asyncio
 async def test_connection_failure_logged_at_info_and_above(
-    mock_station_client, caplog, monkeypatch
+    found_client, caplog, monkeypatch
 ):
     caplog.set_level(logging.DEBUG)
-    client = mock_station_client
-    client.device_id = "dummy_id"
-    client.platform = "dummy_platform"
-    client.uri = "wss://localhost:1234"
-    client.device_token = DEVICE_TOKEN
+    client = found_client
     monkeypatch.setattr(
         aiohttp.ClientSession,
         "ws_connect",
@@ -111,6 +139,81 @@ async def test_connection_failure_logged_at_info_and_above(
     assert levels_of(caplog, "Подключение к станции") == [logging.INFO]
     assert levels_of(caplog, "WebSocket ошибка") == [logging.ERROR]
     assert levels_of(caplog, "Переподключение через") == [logging.INFO]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_delays_grow_up_to_ceiling(found_client, monkeypatch):
+    """Станция недоступна — паузы растут от секунды до потолка."""
+    monkeypatch.setattr(
+        aiohttp.ClientSession,
+        "ws_connect",
+        AsyncMock(side_effect=aiohttp.ClientConnectionError("refused")),
+    )
+    get_token = AsyncMock()
+    monkeypatch.setattr(
+        "yandex_station.station_ws_control.get_device_token", get_token
+    )
+    delays = record_sleeps(monkeypatch, cancel_on=7)
+
+    with pytest.raises(asyncio.CancelledError):
+        await found_client.connect()
+
+    assert delays == [1, 2, 4, 8, 16, 30, 30]
+    # Станция недоступна, а не отвергла токен — quasar не трогаем
+    get_token.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_successful_authorization_resets_reconnect_delay(
+    found_client, monkeypatch
+):
+    """После успешной авторизации реакция на обрыв снова быстрая."""
+    refused = aiohttp.ClientConnectionError("refused")
+    websocket = MagicMock(closed=False, close=AsyncMock())
+    monkeypatch.setattr(
+        aiohttp.ClientSession,
+        "ws_connect",
+        AsyncMock(side_effect=[refused, refused, refused, websocket, refused]),
+    )
+    stub_session_tasks(found_client)
+    found_client.authenticate = AsyncMock(return_value=True)
+    delays = record_sleeps(monkeypatch, cancel_on=5)
+
+    with pytest.raises(asyncio.CancelledError):
+        await found_client.connect()
+
+    # Сеанс после третьей паузы оборвался — снова секунда, а не 8
+    assert delays == [1, 2, 4, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_failed_authorization_pauses_before_new_token(
+    found_client, monkeypatch
+):
+    """Станция отвергла токен — новый запрашивается после растущей паузы."""
+    websocket = MagicMock(closed=False, close=AsyncMock())
+    monkeypatch.setattr(
+        aiohttp.ClientSession, "ws_connect", AsyncMock(return_value=websocket)
+    )
+    stub_session_tasks(found_client)
+    # Третья попытка авторизации обрывает цикл
+    found_client.authenticate = AsyncMock(
+        side_effect=[False, False, asyncio.CancelledError]
+    )
+    timeline = record_sleeps(monkeypatch)
+
+    async def request_token(device_id, platform):
+        timeline.append("token")
+        return "fresh-token"
+
+    monkeypatch.setattr(
+        "yandex_station.station_ws_control.get_device_token", request_token
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await found_client.connect()
+
+    assert timeline == [1, "token", 2, "token"]
 
 
 @pytest.mark.asyncio
