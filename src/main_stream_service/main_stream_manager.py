@@ -93,6 +93,8 @@ class _CycleContext:
     silent_checks: int = 0
     # Пересылки потока подряд, после которых Ruark так и не заиграл
     silent_resends: int = 0
+    # Начало простоя: станция перестала играть (time.monotonic)
+    idle_since: float | None = None
     # Громкость, уже возвращённая Ruark после речи Алисы: защита от
     # переустановки одного и того же уровня каждую итерацию цикла.
     # None до первого возврата — окно переноса голосовой громкости
@@ -400,6 +402,7 @@ class MainStreamManager:
         Returns:
             Track: Актуальный трек (мог обновиться при повторном опросе).
         """
+        self._shutdown_if_idle(track, ctx)
         await self._stop_or_recover_paused_track(track, ctx)
         await self._resume_radio_if_silent(track, ctx)
         track = await self._refresh_track_if_unchanged(track, ctx)
@@ -411,6 +414,32 @@ class MainStreamManager:
         await self._fade_alice_if_playing(track)
         ctx.volume_set_count = 0
         return track
+
+    def _shutdown_if_idle(self, track: Track, ctx: "_CycleContext") -> None:
+        """Выключает стрим, если станция не играет дольше заданного.
+
+        Проверка идёт до команд Ruark: уснувший в штатном автовыключении
+        Ruark не отвечает, и остальные шаги витка прерываются.
+        """
+        if track.playing:
+            ctx.idle_since = None
+            return
+        now = time.monotonic()
+        if ctx.idle_since is None:
+            ctx.idle_since = now
+            return
+        minutes = settings.idle_shutdown_minutes
+        if (
+            not minutes
+            or self._is_shutting_down()
+            or now - ctx.idle_since < minutes * 60
+        ):
+            return
+        logger.info(
+            f"💤 Станция не играет дольше {minutes:g} мин — выключаем "
+            f"стрим, звук возвращается на станцию"
+        )
+        self._schedule_shutdown()
 
     async def _stop_or_recover_paused_track(
         self, track: Track, ctx: "_CycleContext"
