@@ -12,9 +12,14 @@ import aiohttp
 from injector import inject
 
 from core.authorization.yandex_tokens import get_device_token
-from yandex_station.constants import SOCKET_RECONNECT_DELAY
+from core.backoff import ExponentialBackoff
+from yandex_station.constants import (
+    SOCKET_RECONNECT_DELAY,
+    SOCKET_RECONNECT_MAX_DELAY,
+)
 from yandex_station.exceptions import (
     ClientNotRunningError,
+    StationAuthError,
     StationNotFoundError,
 )
 from yandex_station.mdns_device_finder import DeviceFinder, StationDevice
@@ -145,6 +150,9 @@ class YandexStationClient:
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
+        backoff = ExponentialBackoff(
+            SOCKET_RECONNECT_DELAY, SOCKET_RECONNECT_MAX_DELAY
+        )
 
         try:
             while True:
@@ -156,6 +164,7 @@ class YandexStationClient:
 
                 try:
                     if not self.device_token:
+                        logger.info("🔄 Запрос нового токена...")
                         self.device_token = await get_device_token(
                             device_id, platform
                         )
@@ -212,13 +221,15 @@ class YandexStationClient:
                             cleanup_task,
                         ]
 
-                        auth_success = await self.authenticate()
-                        if not auth_success:
-                            logger.warning(
-                                "❌ Ошибка авторизации! Требуется новый токен."
+                        if not await self.authenticate():
+                            # Новый токен запросится в начале следующей
+                            # попытки — уже после паузы
+                            self.device_token = None
+                            raise StationAuthError(
+                                f"Ошибка авторизации на {uri}! "
+                                f"Требуется новый токен."
                             )
-                            await self.refresh_token()
-                            continue  # Попробуем снова
+                        backoff.reset()
 
                         # Отправляем команды восстановления только после
                         # успешной авторизации
@@ -248,6 +259,9 @@ class YandexStationClient:
                                     f"с ошибкой: {result}"
                                 )
 
+                except StationAuthError as e:
+                    logger.warning(f"❌ {e}")
+
                 except aiohttp.ClientError as e:
                     logger.error(f"❌ WebSocket ошибка: {e}")
 
@@ -266,11 +280,9 @@ class YandexStationClient:
                     )
                     break
 
-                logger.info(
-                    f"🔄 Переподключение через "
-                    f"{SOCKET_RECONNECT_DELAY} секунд..."
-                )
-                await asyncio.sleep(SOCKET_RECONNECT_DELAY)
+                delay = backoff.next_delay()
+                logger.info(f"🔄 Переподключение через {delay} секунд...")
+                await asyncio.sleep(delay)
 
         except asyncio.CancelledError:
             logger.info("🛑 connect() прерван через CancelledError")
@@ -366,14 +378,6 @@ class YandexStationClient:
         except Exception as e:
             logger.error(f"❌ Ошибка при проверке авторизации: {e}")
             return False
-
-    async def refresh_token(self):
-        """Запрашивает новый токен и перезапускает WebSocket."""
-        logger.info("🔄 Запрос нового токена...")
-        device_id, platform, _ = self._require_station_params()
-        self.device_token = await get_device_token(device_id, platform)
-        logger.info("✅ Новый токен получен. Переподключение...")
-        await asyncio.sleep(1)
 
     async def stream_station_messages(self):
         """Постоянный поток сообщений от станции с защитой от зависания."""
