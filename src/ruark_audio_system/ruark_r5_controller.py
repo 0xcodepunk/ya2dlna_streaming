@@ -512,6 +512,14 @@ class RuarkR5Controller:
         """Выключение питания."""
         return await self._fsapi.turn_power_off()
 
+    async def set_mode(self, mode_id: str) -> bool:
+        """Переключение режима по id из validModes, например AUXIN.
+
+        Raises:
+            RuarkApiError: Если запрос fsapi не удался или режима нет.
+        """
+        return await self._fsapi.set_mode(mode_id)
+
     def generate_metadata_with_fake_duration(
         self,
         uri: str,

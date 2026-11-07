@@ -12,6 +12,7 @@ from main_stream_service.main_stream_manager import (
     _CycleContext,
 )
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
+from ruark_audio_system.constants import RUARK_RESTING_MODE
 from ruark_audio_system.exceptions import RuarkApiError, RuarkUnavailableError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from yandex_station.constants import (
@@ -812,6 +813,7 @@ async def test_stop_survives_unreachable_ruark():
     ruark = make_ruark()
     ruark.stop.side_effect = RuntimeError("нет связи")
     ruark.set_volume.side_effect = RuntimeError("нет связи")
+    ruark.set_mode.side_effect = RuntimeError("нет связи")
     ruark.turn_power_off.side_effect = RuntimeError("нет связи")
     manager = make_manager(station, ruark)
     manager._stop_stream_on_stream_server = AsyncMock()
@@ -822,6 +824,37 @@ async def test_stop_survives_unreachable_ruark():
     # Главные шаги дошли до конца, несмотря на мёртвый Ruark
     station.unmute.assert_called()
     station.stop_ws_client.assert_called()
+
+
+def make_stopping_manager(power_status="1"):
+    """Менеджер, готовый к stop(), с Ruark в заданном состоянии питания."""
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.get_power_status.return_value = power_status
+    manager = make_manager(station, ruark)
+    manager._stop_stream_on_stream_server = AsyncMock()
+    manager._volume_store = MagicMock()
+    return manager, ruark
+
+
+async def test_stop_leaves_ruark_in_line_in_before_power_off():
+    """Перед выключением Ruark переводится в Line in: так он и проснётся."""
+    manager, ruark = make_stopping_manager()
+
+    await manager.stop()
+
+    ruark.set_mode.assert_awaited_once_with(RUARK_RESTING_MODE)
+    names = [call[0] for call in ruark.method_calls]
+    assert names.index("set_mode") < names.index("turn_power_off")
+
+
+async def test_stop_does_not_wake_powered_off_ruark_for_mode():
+    """Выключенный пользователем Ruark ради режима не будится."""
+    manager, ruark = make_stopping_manager(power_status="0")
+
+    await manager.stop()
+
+    ruark.set_mode.assert_not_awaited()
 
 
 def make_voice_station(alice_states, volume_by_state, track=None):

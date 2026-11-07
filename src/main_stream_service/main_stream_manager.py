@@ -10,6 +10,7 @@ from injector import inject
 
 from core.config.settings import settings
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
+from ruark_audio_system.constants import RUARK_RESTING_MODE
 from ruark_audio_system.exceptions import (
     RuarkApiError,
     RuarkDeviceNotFoundError,
@@ -189,6 +190,7 @@ class MainStreamManager:
             await self._safe_stop_step(
                 self._ruark_controls.set_volume, self._ruark_volume
             )
+        await self._safe_stop_step(self._leave_ruark_in_resting_mode)
         await self._safe_stop_step(self._ruark_controls.turn_power_off)
         await self._station_controls.unmute()
         # Остановка WebSocket-клиента
@@ -209,6 +211,17 @@ class MainStreamManager:
         self._prefetch_tasks.clear()
         self._source_cache.clear()
         logger.info("✅ Стриминг остановлен")
+
+    async def _leave_ruark_in_resting_mode(self) -> None:
+        """Оставляет Ruark в тихом режиме покоя до следующего включения.
+
+        Ruark просыпается в последнем выбранном режиме источника, и из
+        Internet radio первый поток ждёт до минуты. Выключенный
+        пользователем Ruark ради режима не будится.
+        """
+        if await self._ruark_controls.get_power_status() != "1":
+            return
+        await self._ruark_controls.set_mode(RUARK_RESTING_MODE)
 
     async def _safe_stop_step(
         self,
