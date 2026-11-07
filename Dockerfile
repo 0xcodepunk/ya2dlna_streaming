@@ -1,11 +1,14 @@
-FROM python:3.11.9-bookworm
+# Debian закреплён (trixie): от его выпуска зависит мажорная версия FFmpeg
+FROM python:3.11-slim-trixie
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.14 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
+# Без рекомендуемых пакетов: они тянут драйверы видеоускорения (mesa и
+# др.), которые аудио-потоку не нужны
 RUN apt update && \
-    apt install -y ffmpeg && \
+    apt install -y --no-install-recommends ffmpeg && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
