@@ -52,6 +52,14 @@ STREAM_BROKEN_PHRASE = (
 )
 
 
+def _radio_source(url: str) -> TrackSource:
+    """Источник радио для отправки на DLNA-сервер.
+
+    Кодек радио выбирает DLNA-сервер, это значение он не читает.
+    """
+    return TrackSource(url=url, codec="mp3")
+
+
 class _VoiceVolumeCheck(Enum):
     """Что гашению делать с голосовой громкостью реплики."""
 
@@ -458,7 +466,7 @@ class MainStreamManager:
             return
         ctx.last_stream_sent_at = time.monotonic()
         await self._send_track_to_stream_server(
-            track_url=radio_url,
+            _radio_source(radio_url),
             radio=True,
             title=track.title,
         )
@@ -691,12 +699,11 @@ class MainStreamManager:
         ctx.last_track = track
         ctx.last_stream_sent_at = time.monotonic()
         await self._send_track_to_stream_server(
-            source.url,
+            source,
             radio=False,
             start_position=track.progress,
             title=track.title,
             artist=track.artist,
-            codec=source.codec,
         )
         logger.info(
             f"⏱ Ресинк выполнен за "
@@ -718,10 +725,7 @@ class MainStreamManager:
         if track.type == "FmRadio":
             radio_url = await self._station_controls.get_radio_url()
             logger.info(f"🎵 URL радиостанции: {radio_url}")
-            # Кодек радио выбирает DLNA-сервер, это значение он не читает
-            ctx.track_source = (
-                TrackSource(url=radio_url, codec="mp3") if radio_url else None
-            )
+            ctx.track_source = _radio_source(radio_url) if radio_url else None
         else:
             ctx.track_source = await self._resolve_track_source(track.id)
         resolve_seconds = time.monotonic() - switch_started
@@ -740,12 +744,11 @@ class MainStreamManager:
             send_started = time.monotonic()
             ctx.last_stream_sent_at = send_started
             await self._send_track_to_stream_server(
-                ctx.track_source.url,
+                ctx.track_source,
                 radio=track.type == "FmRadio",
                 start_position=start_position,
                 title=track.title,
                 artist=track.artist,
-                codec=ctx.track_source.codec,
             )
             logger.info(
                 f"⏱ Переключение на {track.id}: ссылка "
@@ -803,14 +806,13 @@ class MainStreamManager:
                     # а не с начала — иначе рассинхрон
                     ctx.last_stream_sent_at = time.monotonic()
                     await self._send_track_to_stream_server(
-                        ctx.track_source.url,
+                        ctx.track_source,
                         radio=track.type == "FmRadio",
                         start_position=(
                             track.progress if track.type != "FmRadio" else 0.0
                         ),
                         title=track.title,
                         artist=track.artist,
-                        codec=ctx.track_source.codec,
                     )
                 else:
                     logger.warning(
@@ -1114,37 +1116,37 @@ class MainStreamManager:
 
     async def _send_track_to_stream_server(
         self,
-        track_url: str,
+        source: TrackSource,
         radio: bool = False,
         start_position: float = 0.0,
         title: str = "",
         artist: str = "",
-        codec: str = "mp3",
     ):
         """Отправляет ссылку на трек на стрим сервер.
 
         Args:
-            track_url (str): Прямая ссылка на источник потока.
+            source (TrackSource): Ссылка на источник потока и его кодек.
             radio (bool): Режим радио.
             start_position (float): Позиция старта в секундах.
             title (str): Название трека для дисплея Ruark.
             artist (str): Исполнитель для дисплея Ruark.
-            codec (str): Кодек источника: mp3 или flac.
         """
         try:
             timeout = aiohttp.ClientTimeout(total=15)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                logger.info(f"🎵 Отправляем трек на стрим сервер: {track_url}")
+                logger.info(
+                    f"🎵 Отправляем трек на стрим сервер: {source.url}"
+                )
                 async with session.post(
                     f"http://{self._stream_server_url}:"
                     f"{settings.local_server_port_dlna}/set_stream",
                     params={
-                        "yandex_url": track_url,
+                        "yandex_url": source.url,
                         "radio": str(radio).lower(),
                         "start_position": f"{start_position:.1f}",
                         "title": title,
                         "artist": artist,
-                        "codec": codec,
+                        "codec": source.codec,
                     },
                 ) as resp:
                     response = await resp.json()

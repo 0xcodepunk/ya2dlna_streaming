@@ -174,7 +174,7 @@ async def test_new_track_sent_to_stream_server(fast_sleep):
     call = manager._yandex_music_api.get_track_source.call_args
     assert call.kwargs["track_id"] == "42"
     send_call = manager._send_track_to_stream_server.call_args_list[0]
-    assert send_call.args[0] == "http://track/url"
+    assert send_call.args[0].url == "http://track/url"
     assert send_call.kwargs["radio"] is False
     # Свежий трек (прогресс ниже порога) стартует с начала
     assert send_call.kwargs["start_position"] == pytest.approx(0.0)
@@ -195,8 +195,7 @@ async def test_radio_track_sent_with_radio_flag(fast_sleep):
     station.get_radio_url.assert_called()
     assert manager._send_track_to_stream_server.called
     for call in manager._send_track_to_stream_server.call_args_list:
-        url = call.args[0] if call.args else call.kwargs["track_url"]
-        assert url == "http://radio/master.m3u8"
+        assert call.args[0].url == "http://radio/master.m3u8"
         assert call.kwargs["radio"] is True
 
 
@@ -625,7 +624,7 @@ async def test_next_track_prefetched_in_background(fast_sleep):
     assert len(source_calls_for(manager, "43")) == 1
     # Предзагрузка ничего не отправляет — сосед ещё не играет
     for call in manager._send_track_to_stream_server.call_args_list:
-        assert call.args[0] == "http://track/42"
+        assert call.args[0].url == "http://track/42"
 
 
 async def test_switch_uses_prefetched_link(fast_sleep):
@@ -640,7 +639,8 @@ async def test_switch_uses_prefetched_link(fast_sleep):
     await drive_streaming(
         manager,
         until=lambda: any(
-            call.args[0] == "http://track/43" for call in send.call_args_list
+            call.args[0].url == "http://track/43"
+            for call in send.call_args_list
         ),
     )
 
@@ -659,7 +659,7 @@ async def test_return_to_previous_track_uses_cache(fast_sleep):
     send = manager._send_track_to_stream_server
 
     def returned_to_first():
-        sent = [call.args[0] for call in send.call_args_list]
+        sent = [call.args[0].url for call in send.call_args_list]
         return sent.count("http://track/42") >= 2
 
     await drive_streaming(manager, until=returned_to_first)
@@ -1437,8 +1437,9 @@ async def test_restart_after_reply_keeps_source_codec(fast_sleep):
     await drive_streaming(manager, until=lambda: send.call_count >= 2)
 
     restart_call = send.call_args_list[1]
-    assert restart_call.args[0] == "http://track/flac"
-    assert restart_call.kwargs["codec"] == "flac"
+    assert restart_call.args[0] == TrackSource(
+        url="http://track/flac", codec="flac"
+    )
     assert restart_call.kwargs["start_position"] == pytest.approx(50.0)
 
 
