@@ -44,6 +44,21 @@ def found_client(mock_station_client):
     return client
 
 
+@pytest.fixture
+async def silent_station():
+    """Адрес станции, которая принимает TCP и молчит на TLS-рукопожатии."""
+
+    async def stay_silent(reader, writer):
+        await reader.read()
+        writer.close()
+
+    server = await asyncio.start_server(stay_silent, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    yield f"wss://127.0.0.1:{port}"
+    server.close()
+    await server.wait_closed()
+
+
 def record_sleeps(monkeypatch, cancel_on=None):
     """Подменяет asyncio.sleep: копит паузы, на cancel_on-й обрывает цикл."""
     delays = []
@@ -161,6 +176,27 @@ async def test_reconnect_delays_grow_up_to_ceiling(found_client, monkeypatch):
     assert delays == [1, 2, 4, 8, 16, 30, 30]
     # Станция недоступна, а не отвергла токен — quasar не трогаем
     get_token.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hanging_connection_aborts_on_connect_timeout(
+    found_client, silent_station, caplog, monkeypatch
+):
+    """Зависшее соединение обрывается по таймауту и уходит на паузу."""
+    caplog.set_level(logging.INFO)
+    found_client.uri = silent_station
+    monkeypatch.setattr(
+        "yandex_station.station_ws_control.STATION_CONNECT_TIMEOUT", 0.2
+    )
+    delays = record_sleeps(monkeypatch, cancel_on=1)
+
+    with pytest.raises(asyncio.CancelledError):
+        # Если таймаут не дошёл до сессии, wait_for оборвёт зависший тест
+        await asyncio.wait_for(found_client.connect(), 3)
+
+    assert delays == [1]
+    assert levels_of(caplog, "WebSocket ошибка") == [logging.ERROR]
+    assert "Connection timeout" in caplog.text
 
 
 @pytest.mark.asyncio
