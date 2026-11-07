@@ -133,6 +133,10 @@ class MainStreamManager:
         self._ruark_volume = 0
         self._volume_store = RuarkVolumeStore()
         self._stream_state_running = False
+        # Запуск и остановка сеанса не перекрываются
+        self._session_lock = asyncio.Lock()
+        # Запуск уже идёт: повторная команда ничего не делает
+        self._starting = False
         self._tasks = []  # Хранение фоновых задач
         # Ссылка на задачу авто-остановки (Ruark выключен пользователем)
         self._shutdown_task: asyncio.Task[None] | None = None
@@ -142,8 +146,24 @@ class MainStreamManager:
         self._ruark_outage_started_at: float | None = None
         self._ruark_outage_announced = False
 
-    async def start(self):
-        """Запуск всех стриминговых процессов."""
+    async def start(self) -> None:
+        """Запуск всех стриминговых процессов.
+
+        Повтор во время запуска ничего не делает.
+        """
+        # Сценарий умного дома иногда шлёт «включи стрим» дважды
+        if self._starting:
+            logger.info("⚠️ Стриминг уже запускается")
+            return
+        self._starting = True
+        try:
+            async with self._session_lock:
+                await self._start_session()
+        finally:
+            self._starting = False
+
+    async def _start_session(self) -> None:
+        """Поднимает сеанс: устройства, WebSocket и цикл стриминга."""
         if self._stream_state_running or self._tasks:
             logger.info("⚠️ Стриминг уже запущен")
             return
@@ -182,16 +202,40 @@ class MainStreamManager:
         logger.info("✅ WebSocket клиент запущен")
         self._tasks.extend([stream_task])
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Остановка всех стриминговых процессов.
+
+        Сначала дожидается завершения идущего запуска.
+        """
+        # Без ожидания запуск поднял бы цикл уже после остановки
+        async with self._session_lock:
+            await self._stop_session()
+
+    async def _stop_session(self) -> None:
+        """Гасит сеанс: фоновые задачи, устройства и WebSocket.
 
         Каждый шаг с устройствами выполняется независимо: недоступный
         Ruark (например, выключен пользователем) не должен прерывать
-        возврат звука на станцию и остановку фоновых задач.
+        возврат звука на станцию.
         """
         logger.info("🛑 Остановка стриминга...")
         self._stream_state_running = False
         self._ruark_outage_started_at = None
+        # Цикл гасится до команд устройствам: иначе подготовка только
+        # что поднятого сеанса включила бы Ruark уже после выключения
+        for task in self._tasks:
+            task.cancel()
+        for prefetch_task in self._prefetch_tasks.values():
+            prefetch_task.cancel()
+
+        await asyncio.gather(
+            *self._tasks,
+            *self._prefetch_tasks.values(),
+            return_exceptions=True,
+        )
+        self._tasks.clear()
+        self._prefetch_tasks.clear()
+        self._source_cache.clear()
         await self._remember_ruark_volume()
         await self._safe_stop_step(self._ruark_controls.stop)
         await self._safe_stop_step(self._stop_stream_on_stream_server)
@@ -206,21 +250,6 @@ class MainStreamManager:
         await self._station_controls.unmute()
         # Остановка WebSocket-клиента
         await self._station_controls.stop_ws_client()
-
-        # Отмена всех активных задач
-        for task in self._tasks:
-            task.cancel()
-        for prefetch_task in self._prefetch_tasks.values():
-            prefetch_task.cancel()
-
-        await asyncio.gather(
-            *self._tasks,
-            *self._prefetch_tasks.values(),
-            return_exceptions=True,
-        )
-        self._tasks.clear()
-        self._prefetch_tasks.clear()
-        self._source_cache.clear()
         logger.info("✅ Стриминг остановлен")
 
     async def _leave_ruark_in_resting_mode(self) -> None:

@@ -837,6 +837,65 @@ async def test_start_stays_silent_when_station_unreachable():
     station.say.assert_not_called()
 
 
+def hold_ruark_search(ruark) -> asyncio.Event:
+    """Держит поиск Ruark до сигнала, растягивая окно запуска стрима."""
+    found = asyncio.Event()
+
+    async def search():
+        await found.wait()
+        return True
+
+    ruark.connect.side_effect = search
+    return found
+
+
+async def test_double_start_runs_one_session(fast_sleep, caplog):
+    """Два «включи стрим» за время запуска — один сеанс стриминга."""
+    manager, ruark = make_stopping_manager()
+    station = manager._station_controls
+    ruark_found = hold_ruark_search(ruark)
+
+    starts = asyncio.gather(manager.start(), manager.start())
+    await REAL_SLEEP(0.01)
+    ruark_found.set()
+    await starts
+    # Даём циклу подготовить устройства, затем убираем сеанс
+    await REAL_SLEEP(0.05)
+    await manager.stop()
+
+    station.start_ws_client.assert_awaited_once()
+    ruark.get_session_id.assert_awaited_once()
+    assert caplog.text.count("Запуск стриминга") == 1
+    assert caplog.text.count("Стриминг уже запускается") == 1
+
+
+async def test_stop_during_start_leaves_stream_off(fast_sleep):
+    """«Выключи стрим» во время запуска — по итогу стрим выключен."""
+    manager, ruark = make_stopping_manager(power_status="0")
+    station = manager._station_controls
+    ruark_found = hold_ruark_search(ruark)
+
+    async def unmute_over_network():
+        await REAL_SLEEP(0.05)
+
+    station.unmute.side_effect = unmute_over_network
+
+    start = asyncio.create_task(manager.start())
+    await REAL_SLEEP(0.01)
+    stop = asyncio.create_task(manager.stop())
+    await REAL_SLEEP(0.01)
+    ruark_found.set()
+    await asyncio.gather(start, stop)
+
+    station.unmute.assert_awaited()
+    # Подготовка запущенного цикла не включила Ruark после остановки
+    ruark.turn_power_on.assert_not_awaited()
+    # Цикл не пережил остановку: станцию никто не опрашивает
+    station.get_current_track.reset_mock()
+    await REAL_SLEEP(0.05)
+    station.get_current_track.assert_not_awaited()
+
+
 async def test_repeated_crashes_announce_error_once(fast_sleep, monkeypatch):
     """Серия падений цикла — одно голосовое уведомление, без спама."""
     monkeypatch.setattr(
