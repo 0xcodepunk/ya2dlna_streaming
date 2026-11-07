@@ -16,6 +16,7 @@ from core.backoff import ExponentialBackoff
 from yandex_station.constants import (
     SOCKET_RECONNECT_DELAY,
     SOCKET_RECONNECT_MAX_DELAY,
+    STATION_CONNECT_TIMEOUT,
 )
 from yandex_station.exceptions import (
     ClientNotRunningError,
@@ -153,6 +154,12 @@ class YandexStationClient:
         backoff = ExponentialBackoff(
             SOCKET_RECONNECT_DELAY, SOCKET_RECONNECT_MAX_DELAY
         )
+        # total — стандарт aiohttp: обрывает попытку, если станция приняла
+        # соединение, но молчит на рукопожатии WebSocket. Живое соединение
+        # он не обрывает: таймер прерывает только ожидание рукопожатия
+        timeout = aiohttp.ClientTimeout(
+            total=300, sock_connect=STATION_CONNECT_TIMEOUT
+        )
 
         try:
             while True:
@@ -188,7 +195,9 @@ class YandexStationClient:
                         await self.session.close()
                         self.session = None
 
-                    async with aiohttp.ClientSession() as session:
+                    async with aiohttp.ClientSession(
+                        timeout=timeout
+                    ) as session:
                         self.session = session
                         logger.info(f"🔄 Подключение к станции: {uri}")
                         self.websocket = await session.ws_connect(
