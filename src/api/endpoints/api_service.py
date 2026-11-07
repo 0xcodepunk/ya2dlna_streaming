@@ -9,8 +9,9 @@ logger = getLogger(__name__)
 
 router = APIRouter()
 
-# Ссылка на задачу запуска, чтобы её не собрал сборщик мусора
-_start_task: asyncio.Task[None] | None = None
+# Ссылки на задачи запуска, чтобы их не собрал сборщик мусора:
+# задача держится до своего завершения, повторный запрос её не вытесняет
+_start_tasks: set[asyncio.Task[None]] = set()
 
 
 def _get_manager(request: Request) -> MainStreamManager:
@@ -21,8 +22,9 @@ def _get_manager(request: Request) -> MainStreamManager:
 @router.post("/stream_on")
 async def stream_on(request: Request):
     """API-команда для запуска стрима."""
-    global _start_task
-    _start_task = asyncio.create_task(_get_manager(request).start())
+    task = asyncio.create_task(_get_manager(request).start())
+    _start_tasks.add(task)
+    task.add_done_callback(_start_tasks.discard)
     return {"status": "stream_on"}
 
 
