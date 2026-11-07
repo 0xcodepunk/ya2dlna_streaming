@@ -38,7 +38,7 @@ def make_handler():
 
 def set_params(handler, params):
     """Подменяет выбор параметров FFmpeg на тестовую команду."""
-    handler._get_ffmpeg_params = lambda codec, is_local_file=False: params
+    handler._get_ffmpeg_params = lambda codec, **kwargs: params
 
 
 def get_process(handler):
@@ -269,6 +269,38 @@ async def test_radio_copied_to_adts_without_reencode(monkeypatch):
     command = launched[-1]
     assert command[command.index("-c:a") + 1] == "copy"
     assert command[command.index("-f") + 1] == "adts"
+    await handler.stop_ffmpeg()
+
+
+async def test_aac_track_copied_to_adts_declared_as_mpeg(monkeypatch):
+    """AAC-трек: копирование в ADTS с позиции, aac в ответе, mpeg в DIDL.
+
+    В отличие от радио без -re: трек с CDN подаётся быстрее реального
+    времени, и у Ruark остаётся запас буфера, как у MP3.
+    """
+    launched = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*command, **kwargs):
+        # Настоящего FFmpeg на CI нет: запоминаем команду, запускаем заглушку
+        launched.append(list(command))
+        return await real_exec("sleep", "30", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    handler, ruark = make_handler()
+
+    await handler.play_stream(
+        "http://example/track.aac", start_position=42.0, codec="aac"
+    )
+
+    command = launched[-1]
+    assert command[command.index("-c:a") + 1] == "copy"
+    assert command[command.index("-f") + 1] == "adts"
+    assert "-re" not in command
+    assert command[command.index("-ss") + 2] == "-i"
+    assert handler.stream_media_type == "audio/aac"
+    call = ruark.set_av_transport_uri.call_args
+    assert call.kwargs["mime_type"] == "audio/mpeg"
     await handler.stop_ffmpeg()
 
 

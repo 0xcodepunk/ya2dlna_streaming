@@ -57,7 +57,7 @@ async def set_stream(
 
     start_position — позиция старта в секундах для ресинка (повтор,
     перемотка, продолжение после паузы); title и artist показываются
-    на дисплее Ruark.
+    на дисплее Ruark; codec — кодек трека: mp3, aac или flac.
     """
     logger.info(
         f"📥 Запуск нового потока с {yandex_url} "

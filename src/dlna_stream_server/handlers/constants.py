@@ -122,6 +122,33 @@ FFMPEG_FLAC_PARAMS = [
     "pipe:1",
 ]
 
+# Параметры для AAC-треков: копирование в ADTS без перекодирования,
+# как у радио, но с входными опциями FLAC-треков. Без -re поток с CDN
+# подаётся быстрее реального времени, и у Ruark остаётся запас буфера
+FFMPEG_AAC_TRACK_PARAMS = [
+    "ffmpeg",
+    "-rw_timeout",
+    "30000000",
+    "-reconnect",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_delay_max",
+    "1",
+    "-thread_queue_size",
+    "4096",
+    "-i",
+    "{yandex_url}",
+    "-vn",
+    "-map_metadata",
+    "-1",
+    "-c:a",
+    "copy",
+    "-f",
+    "adts",
+    "pipe:1",
+]
+
 # MIME-типы потоков по кодеку (Content-Type HTTP-ответа)
 STREAM_MIME_TYPES = {
     "mp3": "audio/mpeg",
@@ -132,7 +159,8 @@ STREAM_MIME_TYPES = {
 # Диагностика темпа подачи: длина окна замера и пороги скорости
 # по кодеку, ниже которых подача считается медленнее реального
 # времени (кбит/с). Пороги — с запасом ниже типичных битрейтов:
-# FLAC ~1000-1400, MP3 320, радио-AAC ~112
+# FLAC ~1000-1400, MP3 320, радио-AAC ~112. AAC-треки (256) делят
+# порог с радио, поэтому их просадку до ~100 он не замечает
 STREAM_RATE_WINDOW = 30.0
 STREAM_RATE_THRESHOLDS_KBPS = {
     "flac": 700,
@@ -152,7 +180,7 @@ RUARK_RECONNECT_COOLDOWN = 30.0
 
 # MIME-типы для protocolInfo в DIDL-метаданных привязки Ruark.
 # Ресурс, объявленный как audio/aac, Ruark качает, но не воспроизводит —
-# ADTS-поток радио играет только под вывеской audio/mpeg
+# ADTS-поток радио и AAC-треков играет только под вывеской audio/mpeg
 DIDL_MIME_TYPES = {
     "mp3": "audio/mpeg",
     "flac": "audio/flac",

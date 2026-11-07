@@ -1126,7 +1126,7 @@ class MainStreamManager:
             start_position (float): Позиция старта в секундах.
             title (str): Название трека для дисплея Ruark.
             artist (str): Исполнитель для дисплея Ruark.
-            codec (str): Кодек источника: mp3 или flac.
+            codec (str): Кодек источника: mp3, aac или flac.
         """
         try:
             timeout = aiohttp.ClientTimeout(total=15)

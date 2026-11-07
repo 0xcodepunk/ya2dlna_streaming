@@ -107,7 +107,6 @@ def make_ruark(is_playing=True, volume=20):
 
 def make_manager(station_controls, ruark, track_url="http://track/url"):
     music_api = AsyncMock(spec=YandexMusicAPI)
-    music_api.get_file_info.return_value = track_url
     music_api.get_track_source.return_value = (
         TrackSource(url=track_url, codec="mp3") if track_url else None
     )

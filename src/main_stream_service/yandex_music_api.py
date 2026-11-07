@@ -3,10 +3,11 @@ import hashlib
 import hmac
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import aiohttp
-from yandex_music import ClientAsync
+from yandex_music import ClientAsync, DownloadInfo
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
 from core.config.settings import settings
@@ -23,13 +24,16 @@ MUSIC_CLIENT_HEADERS = {
 
 LOSSLESS_CODECS = "flac,flac-mp4,mp3,aac,he-aac,aac-mp4,he-aac-mp4"
 
+# AAC ниже этого битрейта не выбирается: лучший MP3 предпочтительнее
+AAC_MIN_BITRATE_KBPS = 256
+
 
 @dataclass
 class TrackSource:
     """Источник потока трека: прямая ссылка и кодек."""
 
     url: str
-    codec: str  # "flac" | "mp3"
+    codec: str  # "flac" | "mp3" | "aac"
 
 
 class YandexMusicAPI:
@@ -45,11 +49,15 @@ class YandexMusicAPI:
         track_id: str | int,
         quality: str | None = None,
     ) -> TrackSource | None:
-        """Возвращает лучший источник трека: FLAC, если доступен, иначе MP3.
+        """Возвращает лучший источник трека с учётом настройки lossless.
+
+        Lossless первым, если включён; затем MP3 запрошенного качества,
+        AAC не ниже AAC_MIN_BITRATE_KBPS, лучший MP3; при выключенном
+        lossless — разовое lossless-спасение последним.
 
         Args:
             track_id (str | int): Идентификатор трека.
-            quality (str | None): Битрейт MP3 для фолбэка, kbps.
+            quality (str | None): Запрошенный битрейт MP3, kbps.
         Returns:
             TrackSource | None: Ссылка и кодек или None, если недоступно.
         """
@@ -58,15 +66,13 @@ class YandexMusicAPI:
             if lossless_url:
                 return TrackSource(url=lossless_url, codec="flac")
 
-        # Только MP3: без фильтра «лучшим по битрейту» может оказаться
-        # AAC, а его копирование в MP3-контейнер роняет FFmpeg
-        mp3_url = await self.get_file_info(
-            track_id, quality=quality, codecs="mp3"
+        source = self._pick_lossy_source(
+            await self._get_download_info(track_id), quality
         )
-        if mp3_url:
-            return TrackSource(url=mp3_url, codec="mp3")
+        if source:
+            return source
 
-        # У трека нет MP3 вовсе — разово спасаемся lossless
+        # Нет ни MP3, ни AAC от 256 — разово спасаемся lossless
         if not settings.prefer_lossless:
             lossless_url = await self._get_lossless_url(track_id)
             if lossless_url:
@@ -132,53 +138,48 @@ class YandexMusicAPI:
             )
             return None
 
-    async def get_file_info(
-        self,
-        track_id: str | int,
-        quality: str | None = None,
-        codecs: str | None = None,
-    ) -> str | None:
-        """Возвращает прямую ссылку на файл трека.
-
-        Args:
-            track_id (str | int): Идентификатор трека.
-            quality (str | None): Желаемый битрейт в kbps.
-            codecs (str | None): Фильтр по кодеку.
-        Returns:
-            str | None: Прямая ссылка или None, если трек недоступен.
-        """
+    async def _get_download_info(
+        self, track_id: str | int
+    ) -> list[DownloadInfo]:
+        """Запрашивает варианты файла трека с прямыми ссылками."""
         track = await self._client.tracks(track_id)
         if not track:
-            return None
+            return []
 
         download_info = await track[0].get_download_info_async(
             get_direct_links=True
         )
         logger.info(f"🔍 Получены ссылки для скачивания: {download_info}")
-        if not download_info:
-            return None
+        return download_info or []
 
-        candidates = [
+    @staticmethod
+    def _pick_lossy_source(
+        download_info: Sequence[DownloadInfo], quality: str | None
+    ) -> TrackSource | None:
+        """Выбирает источник с потерями по ступеням качества.
+
+        Ступени: MP3 запрошенного качества, лучший AAC не ниже
+        AAC_MIN_BITRATE_KBPS, лучший MP3. Кодек фильтруется на каждой
+        ступени: AAC, скопированный в MP3-контейнер, роняет FFmpeg.
+        """
+        mp3 = [info for info in download_info if info.codec == "mp3"]
+        exact_mp3 = [
+            info
+            for info in mp3
+            if quality and info.bitrate_in_kbps == int(quality)
+        ]
+        aac = [
             info
             for info in download_info
-            if not codecs or info.codec == codecs
+            if info.codec == "aac"
+            and info.bitrate_in_kbps >= AAC_MIN_BITRATE_KBPS
         ]
-
-        if quality:
-            quality_kbps = int(quality)
-            logger.info(f"🔍 Ищем ссылку с качеством: {quality_kbps} kbps")
-            for info in candidates:
-                if info.bitrate_in_kbps == quality_kbps:
-                    logger.info(f"✅ Найдена: {info.direct_link}")
-                    return str(info.direct_link)
-
-        # Если не указано качество — возвращаем лучшее
-        best = max(candidates, key=lambda x: x.bitrate_in_kbps, default=None)
-        if best:
-            logger.info(
-                f"✅ Лучшее качество: {best.bitrate_in_kbps} "
-                f"kbps — {best.direct_link}"
-            )
-            return str(best.direct_link)
-
+        for tier in (exact_mp3, aac, mp3):
+            best = max(tier, key=lambda x: x.bitrate_in_kbps, default=None)
+            if best:
+                logger.info(
+                    f"✅ Выбран источник {best.codec} "
+                    f"{best.bitrate_in_kbps} kbps — {best.direct_link}"
+                )
+                return TrackSource(url=str(best.direct_link), codec=best.codec)
         return None

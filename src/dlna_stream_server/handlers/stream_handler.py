@@ -15,6 +15,7 @@ from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 from .constants import (
     DIDL_MIME_TYPES,
     FFMPEG_AAC_PARAMS,
+    FFMPEG_AAC_TRACK_PARAMS,
     FFMPEG_FLAC_PARAMS,
     FFMPEG_LOCAL_MP3_PARAMS,
     FFMPEG_MP3_PARAMS,
@@ -55,7 +56,7 @@ class StreamHandler:
         self._ffmpeg = FfmpegSupervisor(on_restarted=self._reattach_ruark)
         # Метаданные текущего потока для дисплея Ruark: (title, artist)
         self._now_playing: tuple[str, str] = (DEFAULT_STREAM_TITLE, "")
-        # Кодек текущего потока: mp3 | flac | aac (радио)
+        # Кодек текущего потока: mp3 | flac | aac (радио и AAC-треки)
         self._stream_codec = "mp3"
         # Поколение клиента: новый слушатель вытесняет предыдущего,
         # иначе два читателя одного pipe рвут поток на куски
@@ -166,7 +167,7 @@ class StreamHandler:
             yandex_url (str): Прямая ссылка на источник потока.
             radio (bool): Режим радио.
             start_position (float): Позиция старта трека в секундах.
-            codec (str): Кодек трека: mp3 или flac (lossless).
+            codec (str): Кодек трека: mp3, aac или flac (lossless).
         """
         # Очищаем папку от старых MP3 файлов перед запуском нового стрима
         if not radio and settings.stream_is_local_file:
@@ -177,14 +178,14 @@ class StreamHandler:
             # плейлисты привязаны к сессии (hlssid) и должны запрашиваться
             # тем же клиентом, что получил мастер
             self._stream_codec = "aac"
-            params = self._get_ffmpeg_params(codec="aac")
+            params = self._get_ffmpeg_params(codec="aac", radio=True)
         else:
             yandex_url = (
                 await self._download_and_get_local_mp3_path(yandex_url)
                 if settings.stream_is_local_file
                 else yandex_url
             )
-            self._stream_codec = codec if codec == "flac" else "mp3"
+            self._stream_codec = codec if codec in ("flac", "aac") else "mp3"
             params = _insert_start_position(
                 self._get_ffmpeg_params(
                     codec=self._stream_codec,
@@ -464,9 +465,11 @@ class StreamHandler:
             logger.warning(f"⚠️ Ошибка при очистке папки {mp3_dir}: {e}")
 
     def _get_ffmpeg_params(
-        self, codec: str, is_local_file: bool = False
+        self, codec: str, is_local_file: bool = False, radio: bool = False
     ) -> Sequence[str]:
         """Возвращает набор параметров FFmpeg для кодека."""
+        if radio:
+            return FFMPEG_AAC_PARAMS
         if codec == "mp3":
             return (
                 FFMPEG_LOCAL_MP3_PARAMS if is_local_file else FFMPEG_MP3_PARAMS
@@ -474,6 +477,6 @@ class StreamHandler:
         elif codec == "flac":
             return FFMPEG_FLAC_PARAMS
         elif codec == "aac":
-            return FFMPEG_AAC_PARAMS
+            return FFMPEG_AAC_TRACK_PARAMS
         else:
             raise ValueError(f"Неизвестный кодек {codec}")
