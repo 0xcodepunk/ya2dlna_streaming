@@ -124,10 +124,24 @@ async def test_create_session_raises_on_malformed_response():
         await client.create_session()
 
 
-async def test_get_power_status_parses_value():
-    client = make_client(POWER_ON_RESPONSE)
+@pytest.mark.parametrize(
+    ("response", "powered_on"),
+    [(POWER_ON_RESPONSE, True), (POWER_OFF_RESPONSE, False)],
+    ids=["on", "off"],
+)
+async def test_is_powered_on_parses_status(response, powered_on):
+    client = make_client(response)
 
-    assert await client.get_power_status() == "1"
+    assert await client.is_powered_on() is powered_on
+
+
+async def test_is_powered_on_rejects_unknown_status():
+    client = make_client(
+        "<fsapiResponse><value><u8>2</u8></value></fsapiResponse>"
+    )
+
+    with pytest.raises(RuarkApiError):
+        await client.is_powered_on()
 
 
 async def test_turn_power_on_verifies_final_status():

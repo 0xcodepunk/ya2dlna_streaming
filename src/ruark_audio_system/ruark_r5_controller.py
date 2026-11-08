@@ -496,13 +496,13 @@ class RuarkR5Controller:
         """
         return await self._fsapi.create_session()
 
-    async def get_power_status(self) -> str:
-        """Получение статуса питания ('1' — включено, '0' — выключено).
+    async def is_powered_on(self) -> bool:
+        """Проверяет, включено ли питание Ruark.
 
         Raises:
-            RuarkApiError: Если запрос fsapi не удался или нет статуса.
+            RuarkApiError: Если запрос fsapi не удался или статус не 0 и не 1.
         """
-        return await self._fsapi.get_power_status()
+        return await self._fsapi.is_powered_on()
 
     async def turn_power_on(self) -> bool:
         """Включение питания."""

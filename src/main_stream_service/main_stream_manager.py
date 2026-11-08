@@ -10,7 +10,7 @@ from injector import inject
 
 from core.backoff import ExponentialBackoff
 from core.config.settings import settings
-from core.enums import Codec
+from core.enums import AliceState, Codec, TrackType
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.constants import RUARK_RESTING_MODE
 from ruark_audio_system.exceptions import (
@@ -77,7 +77,7 @@ class _CycleContext:
     """Изменяемое состояние цикла стриминга между итерациями."""
 
     last_track: Track
-    last_alice_state: str | None
+    last_alice_state: AliceState | None
     last_track_progress: float = 0.0
     # Момент снятия снапшота прогресса (time.monotonic)
     last_progress_at: float = 0.0
@@ -87,7 +87,7 @@ class _CycleContext:
     speak_count: int = 0
     # Источник текущего потока: пересылки берут из него ссылку и кодек
     track_source: TrackSource | None = None
-    last_log_signature: tuple[str, bool, str | None] | None = None
+    last_log_signature: tuple[str, bool, AliceState | None] | None = None
     # Момент последней отправки потока (time.monotonic)
     last_stream_sent_at: float = 0.0
     last_silence_check_at: float = 0.0
@@ -260,7 +260,7 @@ class MainStreamManager:
         Internet radio первый поток ждёт до минуты. Выключенный
         пользователем Ruark ради режима не будится.
         """
-        if await self._ruark_controls.get_power_status() != "1":
+        if not await self._ruark_controls.is_powered_on():
             return
         await self._ruark_controls.set_mode(RUARK_RESTING_MODE)
 
@@ -286,7 +286,7 @@ class MainStreamManager:
             ctx = _CycleContext(
                 last_track=Track(
                     id="0",
-                    type="",
+                    type=TrackType.OTHER,
                     artist="",
                     title="",
                     duration=0,
@@ -316,7 +316,7 @@ class MainStreamManager:
 
                 await self._duck_ruark_on_alice_speech(alice_state, ctx)
 
-                if alice_state == "IDLE":
+                if alice_state == AliceState.IDLE:
                     try:
                         track = await self._handle_idle_cycle(track, ctx)
                         self._clear_ruark_outage()
@@ -346,7 +346,7 @@ class MainStreamManager:
             raise
 
     async def _duck_ruark_on_alice_speech(
-        self, alice_state: str | None, ctx: "_CycleContext"
+        self, alice_state: AliceState | None, ctx: "_CycleContext"
     ) -> None:
         """Приглушает Ruark, когда Алиса начинает говорить или слушать.
 
@@ -503,7 +503,7 @@ class MainStreamManager:
         свежепривязанному потоку нужно время на буферизацию HLS, иначе
         ежесекундные перепривязки сами не дают радио стартовать.
         """
-        if track.type != "FmRadio":
+        if not track.is_radio:
             return
         if ctx.last_track_progress == track.progress:
             return
@@ -551,7 +551,7 @@ class MainStreamManager:
         значением с учётом времени, прошедшего со снапшота, — иначе
         долгая итерация (fade, запросы) выглядела бы как скачок.
         """
-        if track.type == "FmRadio" or not track.playing:
+        if track.is_radio or not track.playing:
             return
         if track.id != ctx.last_track.id:
             return
@@ -578,7 +578,7 @@ class MainStreamManager:
         дорогая, поэтому выполняется не чаще SILENCE_CHECK_INTERVAL
         и требует двух подтверждений тишины подряд.
         """
-        if track.type == "FmRadio" or not track.playing or ctx.speak_count:
+        if track.is_radio or not track.playing or ctx.speak_count:
             ctx.silent_checks = 0
             return
 
@@ -667,7 +667,7 @@ class MainStreamManager:
         не должен останавливать стриминг.
         """
         try:
-            return await self._ruark_controls.get_power_status() == "0"
+            return not await self._ruark_controls.is_powered_on()
         except Exception as e:
             logger.debug(f"Не удалось узнать питание Ruark: {e}")
             return False
@@ -714,7 +714,7 @@ class MainStreamManager:
         предыдущий — для возврата назад. Уже закешированные и уже
         загружаемые треки пропускаются.
         """
-        if track.type == "FmRadio":
+        if track.is_radio:
             return
         for neighbor_id in (track.next_id, track.prev_id):
             if not neighbor_id or neighbor_id == track.id:
@@ -781,7 +781,7 @@ class MainStreamManager:
             return
 
         switch_started = time.monotonic()
-        if track.type == "FmRadio":
+        if track.is_radio:
             radio_url = await self._station_controls.get_radio_url()
             logger.info(f"🎵 URL радиостанции: {radio_url}")
             ctx.track_source = _radio_source(radio_url) if radio_url else None
@@ -791,10 +791,7 @@ class MainStreamManager:
 
         if ctx.track_source:
             start_position = 0.0
-            if (
-                track.type != "FmRadio"
-                and track.progress > PROGRESS_JUMP_THRESHOLD
-            ):
+            if not track.is_radio and track.progress > PROGRESS_JUMP_THRESHOLD:
                 start_position = track.progress
                 logger.info(
                     f"▶️ Трек уже играет на станции, продолжаем "
@@ -804,7 +801,7 @@ class MainStreamManager:
             ctx.last_stream_sent_at = send_started
             await self._send_track_to_stream_server(
                 ctx.track_source,
-                radio=track.type == "FmRadio",
+                radio=track.is_radio,
                 start_position=start_position,
                 title=track.title,
                 artist=track.artist,
@@ -844,7 +841,7 @@ class MainStreamManager:
 
             # Радио буферизует HLS дольше, чем стартует трек, —
             # ждём дольше, чтобы не перепривязывать поток зря
-            attempts = 80 if track.type == "FmRadio" else 30
+            attempts = 80 if track.is_radio else 30
             for _ in range(attempts):
                 if await self._ruark_controls.is_playing():
                     logger.info("▶️ Ruark начал играть")
@@ -866,9 +863,9 @@ class MainStreamManager:
                     ctx.last_stream_sent_at = time.monotonic()
                     await self._send_track_to_stream_server(
                         ctx.track_source,
-                        radio=track.type == "FmRadio",
+                        radio=track.is_radio,
                         start_position=(
-                            track.progress if track.type != "FmRadio" else 0.0
+                            0.0 if track.is_radio else track.progress
                         ),
                         title=track.title,
                         artist=track.artist,
@@ -1001,21 +998,21 @@ class MainStreamManager:
                 current_volume is not None
                 and current_volume > 0
                 and track.duration - track.progress > 10
-                and track.type != "FmRadio"
+                and not track.is_radio
             )
-            or (track.type == "FmRadio" and track.playing)
+            or (track.is_radio and track.playing)
         ) and track.playing:
             await self._station_controls.fade_out_alice_volume()
 
     async def _unmute_before_track_end(
-        self, track: Track, alice_state: str | None
+        self, track: Track, alice_state: AliceState | None
     ) -> None:
         """Возвращает громкость станции перед самым концом трека."""
         if (
             track.duration - track.progress < 1
-            and alice_state == "IDLE"
+            and alice_state == AliceState.IDLE
             and track.playing
-            and track.type != "FmRadio"
+            and not track.is_radio
         ):
             await self._station_controls.unmute()
 
@@ -1121,7 +1118,7 @@ class MainStreamManager:
         await self._ws_client.wait_for_state_update(1.0)
         await self._station_controls.set_default_volume()
         await self._ruark_controls.get_session_id()
-        if await self._ruark_controls.get_power_status() == "0":
+        if not await self._ruark_controls.is_powered_on():
             await self._ruark_controls.turn_power_on()
             await self._restore_saved_ruark_volume()
         else:
@@ -1263,7 +1260,7 @@ class MainStreamManager:
     def _log_current_track(
         self,
         track: Track,
-        state: str | None,
+        state: AliceState | None,
         ctx: "_CycleContext",
     ):
         """Логирует состояние: INFO при изменении, DEBUG на каждом тике."""

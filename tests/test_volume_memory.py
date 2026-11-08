@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+from core.enums import AliceState, TrackType
 from main_stream_service.main_stream_manager import (
     MainStreamManager,
     _CycleContext,
@@ -40,7 +41,7 @@ def make_paused_track() -> Track:
     """Трек на паузе: ветка возврата громкости без ожидания Ruark."""
     return Track(
         id="1",
-        type="Track",
+        type=TrackType.TRACK,
         artist="artist",
         title="title",
         duration=100.0,
@@ -52,7 +53,7 @@ def make_paused_track() -> Track:
 def make_manager(ruark_volume=20):
     ruark = AsyncMock(spec=RuarkR5Controller)
     ruark.get_volume.return_value = ruark_volume
-    ruark.get_power_status.return_value = "1"
+    ruark.is_powered_on.return_value = True
     ruark.get_session_id.return_value = "sid"
     station = AsyncMock(spec=YandexStationControls)
     # Станция замьючена стримом и помнит рабочий уровень
@@ -74,7 +75,7 @@ def make_manager(ruark_volume=20):
 async def test_prepare_devices_restores_saved_volume():
     """Выключенный Ruark — обычный новый сеанс: уровень из файла."""
     manager, ruark = make_manager()
-    ruark.get_power_status.return_value = "0"
+    ruark.is_powered_on.return_value = False
     manager._volume_store.load.return_value = 33
 
     await manager._prepare_devices()
@@ -173,7 +174,7 @@ async def test_prepare_devices_lifts_silent_device_to_minimum():
 async def test_prepare_devices_keeps_quiet_but_audible_volume():
     """Тихое, но слышимое прослушивание не задирается до минимума."""
     manager, ruark = make_manager(ruark_volume=8)
-    ruark.get_power_status.return_value = "0"
+    ruark.is_powered_on.return_value = False
     manager._volume_store.load.return_value = 8
 
     await manager._prepare_devices()
@@ -188,7 +189,7 @@ async def test_ducking_snapshot_ignores_silent_device():
     manager._ruark_volume = 40
     ctx = make_ctx()
 
-    await manager._duck_ruark_on_alice_speech("SPEAKING", ctx)
+    await manager._duck_ruark_on_alice_speech(AliceState.SPEAKING, ctx)
 
     assert manager._ruark_volume == 40
     ruark.set_volume.assert_awaited_with(RUARK_IDLE_VOLUME)
