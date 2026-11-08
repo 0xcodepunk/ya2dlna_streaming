@@ -63,7 +63,7 @@
 
 | Метод | Эндпоинт | Описание |
 |-------|----------|----------|
-| `POST` | `/set_stream` | Запуск потока: `yandex_url`, `radio`, `start_position`, `title`, `artist` |
+| `POST` | `/set_stream` | Запуск потока: `yandex_url`, `codec` (обязателен: `mp3`, `flac`, `aac`), `radio`, `start_position`, `title`, `artist` |
 | `GET/HEAD` | `/live_stream.mp3` | Аудиопоток для DLNA-устройства |
 | `POST` | `/stop_stream` | Остановка потока |
 

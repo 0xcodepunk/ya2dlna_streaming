@@ -2,13 +2,14 @@ import asyncio
 import os
 import time
 from logging import getLogger
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence, assert_never
 
 import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.config.settings import settings
+from core.enums import Codec
 from ruark_audio_system.constants import DEFAULT_STREAM_TITLE
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
 
@@ -25,6 +26,7 @@ from .constants import (
     STREAM_RATE_THRESHOLDS_KBPS,
     STREAM_RATE_WINDOW,
 )
+from .exceptions import UnsupportedCodecError
 from .ffmpeg_supervisor import FfmpegSupervisor
 
 logger = getLogger(__name__)
@@ -55,8 +57,8 @@ class StreamHandler:
         self._ffmpeg = FfmpegSupervisor(on_restarted=self._reattach_ruark)
         # Метаданные текущего потока для дисплея Ruark: (title, artist)
         self._now_playing: tuple[str, str] = (DEFAULT_STREAM_TITLE, "")
-        # Кодек текущего потока: mp3 | flac | aac (радио)
-        self._stream_codec = "mp3"
+        # Кодек текущего потока; MP3 — только до первого запуска
+        self._stream_codec = Codec.MP3
         # Поколение клиента: новый слушатель вытесняет предыдущего,
         # иначе два читателя одного pipe рвут поток на куски
         self._client_epoch = 0
@@ -156,17 +158,19 @@ class StreamHandler:
     async def start_ffmpeg_stream(
         self,
         yandex_url: str,
+        codec: Codec,
         radio: bool = False,
         start_position: float = 0.0,
-        codec: str = "mp3",
     ) -> None:
         """Готовит источник и запускает потоковую передачу через FFmpeg.
 
         Args:
             yandex_url (str): Прямая ссылка на источник потока.
+            codec (Codec): Кодек трека; радио всегда идёт в AAC.
             radio (bool): Режим радио.
             start_position (float): Позиция старта трека в секундах.
-            codec (str): Кодек трека: mp3 или flac (lossless).
+        Raises:
+            UnsupportedCodecError: Для кодека трека нет параметров FFmpeg.
         """
         # Очищаем папку от старых MP3 файлов перед запуском нового стрима
         if not radio and settings.stream_is_local_file:
@@ -176,22 +180,22 @@ class StreamHandler:
             # Мастер-плейлист передаётся FFmpeg как есть: вложенные
             # плейлисты привязаны к сессии (hlssid) и должны запрашиваться
             # тем же клиентом, что получил мастер
-            self._stream_codec = "aac"
-            params = self._get_ffmpeg_params(codec="aac")
+            self._stream_codec = Codec.AAC
+            params = self._get_ffmpeg_params(codec=Codec.AAC, radio=True)
         else:
             yandex_url = (
                 await self._download_and_get_local_mp3_path(yandex_url)
                 if settings.stream_is_local_file
                 else yandex_url
             )
-            self._stream_codec = codec if codec == "flac" else "mp3"
             params = _insert_start_position(
                 self._get_ffmpeg_params(
-                    codec=self._stream_codec,
+                    codec=codec,
                     is_local_file=settings.stream_is_local_file,
                 ),
                 start_position,
             )
+            self._stream_codec = codec
 
         await self._ffmpeg.start(yandex_url, params, radio)
 
@@ -378,11 +382,11 @@ class StreamHandler:
     async def play_stream(
         self,
         yandex_url: str,
+        codec: Codec,
         radio: bool = False,
         start_position: float = 0.0,
         title: str = "",
         artist: str = "",
-        codec: str = "mp3",
     ) -> None:
         """Запускает потоковую трансляцию и передает её на Ruark."""
         self._now_playing = (title or DEFAULT_STREAM_TITLE, artist)
@@ -397,7 +401,7 @@ class StreamHandler:
             play_started = time.monotonic()
             # Запускаем потоковую передачу (быстро, без ожидания)
             await self.start_ffmpeg_stream(
-                yandex_url, radio, start_position, codec
+                yandex_url, codec, radio, start_position
             )
             ffmpeg_seconds = time.monotonic() - play_started
 
@@ -464,16 +468,34 @@ class StreamHandler:
             logger.warning(f"⚠️ Ошибка при очистке папки {mp3_dir}: {e}")
 
     def _get_ffmpeg_params(
-        self, codec: str, is_local_file: bool = False
+        self, codec: Codec, radio: bool = False, is_local_file: bool = False
     ) -> Sequence[str]:
-        """Возвращает набор параметров FFmpeg для кодека."""
-        if codec == "mp3":
-            return (
-                FFMPEG_LOCAL_MP3_PARAMS if is_local_file else FFMPEG_MP3_PARAMS
-            )
-        elif codec == "flac":
-            return FFMPEG_FLAC_PARAMS
-        elif codec == "aac":
-            return FFMPEG_AAC_PARAMS
-        else:
-            raise ValueError(f"Неизвестный кодек {codec}")
+        """Возвращает набор параметров FFmpeg для кодека.
+
+        Args:
+            codec (Codec): Кодек источника.
+            radio (bool): Источник — HLS-радио.
+            is_local_file (bool): Источник — скачанный локальный MP3.
+        Returns:
+            Sequence[str]: Команда FFmpeg с подстановкой {yandex_url}.
+        Raises:
+            UnsupportedCodecError: AAC-трек: набор AAC есть только у радио.
+        """
+        match codec:
+            case Codec.MP3:
+                return (
+                    FFMPEG_LOCAL_MP3_PARAMS
+                    if is_local_file
+                    else FFMPEG_MP3_PARAMS
+                )
+            case Codec.FLAC:
+                return FFMPEG_FLAC_PARAMS
+            case Codec.AAC if radio:
+                return FFMPEG_AAC_PARAMS
+            case Codec.AAC:
+                raise UnsupportedCodecError(
+                    "Для AAC-трека нет параметров FFmpeg: набор AAC "
+                    "рассчитан на HLS-радио"
+                )
+            case _:
+                assert_never(codec)
