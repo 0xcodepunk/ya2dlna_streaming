@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 from injector import inject
+from pydantic import JsonValue
 
 from core.backoff import ExponentialBackoff
 from core.config.settings import settings
@@ -277,7 +278,7 @@ class MainStreamManager:
                 f"⚠️ Шаг остановки {func.__name__} не выполнен: {e}"
             )
 
-    async def streaming(self):
+    async def streaming(self) -> None:
         """Основной поток управления стримингом."""
         try:
             logger.info("📡 Поток streaming() стартовал")
@@ -1016,7 +1017,7 @@ class MainStreamManager:
         ):
             await self._station_controls.unmute()
 
-    async def _wrap_streaming(self):
+    async def _wrap_streaming(self) -> None:
         """Следит за потоком стриминга и перезапускает его при падении.
 
         Пауза перед перезапуском растёт до потолка, пока цикл падает
@@ -1077,7 +1078,7 @@ class MainStreamManager:
         if volume > RUARK_IDLE_VOLUME:
             self._ruark_volume = volume
 
-    async def _remember_ruark_volume(self):
+    async def _remember_ruark_volume(self) -> None:
         """Запоминает пользовательскую громкость Ruark для нового сеанса."""
         try:
             self._remember_ruark_volume_level(
@@ -1111,7 +1112,8 @@ class MainStreamManager:
                 await self._note_ruark_outage(e)
                 await asyncio.sleep(RUARK_RETRY_INTERVAL)
 
-    async def _prepare_devices(self):
+    async def _prepare_devices(self) -> None:
+        """Готовит станцию и Ruark к стримингу: громкость и питание."""
         logger.info("🔧 Подготовка устройств к стримингу...")
         # Ждём первое сообщение станции вместо фиксированной паузы:
         # обычно оно приходит сразу после подключения WebSocket
@@ -1182,7 +1184,7 @@ class MainStreamManager:
         start_position: float = 0.0,
         title: str = "",
         artist: str = "",
-    ):
+    ) -> JsonValue:
         """Отправляет ссылку на трек на стрим сервер.
 
         Args:
@@ -1220,7 +1222,7 @@ class MainStreamManager:
             logger.error(f"❌ Непредвиденная ошибка при отправке трека: {e}")
             return None
 
-    async def _stop_stream_on_stream_server(self):
+    async def _stop_stream_on_stream_server(self) -> JsonValue:
         """Останавливает стрим на стрим сервере."""
         timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -1262,7 +1264,7 @@ class MainStreamManager:
         track: Track,
         state: AliceState | None,
         ctx: "_CycleContext",
-    ):
+    ) -> None:
         """Логирует состояние: INFO при изменении, DEBUG на каждом тике."""
         message = (
             f"🎵 Сейчас играет: {track.id} - {track.artist} - "

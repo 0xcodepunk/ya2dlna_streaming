@@ -8,7 +8,7 @@ ProtoDict = dict[int, ProtoValue]
 class Protobuf:
     """Класс для работы с Protobuf."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Инициализация без параметров для использования в DI контейнере."""
         pass
 
@@ -74,7 +74,7 @@ class Protobuf:
 
         return res
 
-    def _append_varint(self, b: bytearray, i: int):
+    def _append_varint(self, b: bytearray, i: int) -> None:
         """Добавляет varint в массив байтов."""
         while i >= 0x80:
             b.append(0x80 | (i & 0x7F))

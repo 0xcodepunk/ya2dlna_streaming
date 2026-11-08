@@ -44,12 +44,13 @@ class YandexStationControls:
         # Уровень отправлен unmute, но станция ещё сообщает прежнюю громкость
         self._level_unconfirmed = False
 
-    async def start_ws_client(self):
+    async def start_ws_client(self) -> None:
         """Запуск WebSocket-клиента."""
         logger.info("🔄 Запуск WebSocket-клиента")
         await self._ws_client.run_once()
 
-    async def stop_ws_client(self):
+    async def stop_ws_client(self) -> None:
+        """Остановка WebSocket-клиента."""
         if not self._ws_client.running:
             logger.info("⚠️ WebSocket-клиент уже полностью остановлен")
             return
@@ -57,15 +58,15 @@ class YandexStationControls:
         logger.info("🔄 Остановка WebSocket-клиента")
         await self._ws_client.close()
 
-    async def play(self):
+    async def play(self) -> None:
         """Запуск воспроизведения."""
         await self._ws_client.send_command({"command": "play"})
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Остановка воспроизведения."""
         await self._ws_client.send_command({"command": "stop"})
 
-    async def send_text(self, text: str):
+    async def send_text(self, text: str) -> None:
         """Отправка текстового сообщения."""
         logger.info(f"🔊 Отправка текстового сообщения: {text}")
         try:
@@ -242,7 +243,7 @@ class YandexStationControls:
         """Уровень отправлен unmute, но станция ещё его не сообщила."""
         return self._level_unconfirmed
 
-    async def set_default_volume(self):
+    async def set_default_volume(self) -> None:
         """Установка громкости по умолчанию."""
         logger.info("🔊 Установка громкости по умолчанию")
         # Громкость заглушённой стримом станции — след гашения, а не уровень
@@ -272,7 +273,7 @@ class YandexStationControls:
         # предположение сняло бы по этому чтению настоящую заглушку гашения
         self._mute_assumed = False
 
-    async def set_volume(self, volume: float):
+    async def set_volume(self, volume: float) -> None:
         """Установка уровня громкости."""
         logger.info(f"🔊 Установка громкости на {volume}")
         try:
@@ -287,7 +288,7 @@ class YandexStationControls:
         except Exception as e:
             logger.error(f"❌ Ошибка при установке громкости: {e}")
 
-    async def mute(self):
+    async def mute(self) -> None:
         """Безопасное выключение звука — только если Алиса молчит."""
         if self._was_muted:
             return
@@ -332,7 +333,7 @@ class YandexStationControls:
         """Проверяет, слушает или говорит ли Алиса."""
         return await self.get_alice_state() in ALICE_ACTIVE_STATES
 
-    async def fade_out_station(self):
+    async def fade_out_station(self) -> None:
         """Плавное отключение звука станции с задержкой."""
         if self._was_muted:
             return

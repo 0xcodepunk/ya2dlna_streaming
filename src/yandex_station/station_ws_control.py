@@ -133,7 +133,7 @@ class YandexStationClient:
         except (OSError, asyncio.TimeoutError):
             return False
 
-    async def run_once(self):
+    async def run_once(self) -> None:
         """Гарантированный однократный запуск WebSocket."""
         if self._connect_task and not self._connect_task.done():
             logger.warning("⚠️ WebSocket уже запущен")
@@ -144,7 +144,7 @@ class YandexStationClient:
         self._connect_task = asyncio.create_task(self.connect())
         self._check_duplicate_tasks()
 
-    async def connect(self):
+    async def connect(self) -> None:
         """Подключение к WebSocket станции."""
         device_id, platform, uri = self._require_station_params()
 
@@ -297,7 +297,7 @@ class YandexStationClient:
             logger.info("🛑 connect() прерван через CancelledError")
             raise
 
-    async def keep_alive_ws_connection(self):
+    async def keep_alive_ws_connection(self) -> None:
         """Поддерживает WebSocket-соединение активным."""
         try:
             while self.running:
@@ -388,7 +388,7 @@ class YandexStationClient:
             logger.error(f"❌ Ошибка при проверке авторизации: {e}")
             return False
 
-    async def stream_station_messages(self):
+    async def stream_station_messages(self) -> None:
         """Постоянный поток сообщений от станции с защитой от зависания."""
         logger.info("📥 Поток приёма сообщений от станции запущен")
 
@@ -479,7 +479,7 @@ class YandexStationClient:
         await self.command_queue.put("stop")
         logger.info("🛑 stream_station_messages завершен")
 
-    async def command_producer_handler(self):
+    async def command_producer_handler(self) -> None:
         """Обрабатывает команды из очереди и отправляет их на станцию."""
         logger.info("📤 Поток отправки команд на станцию запущен")
         while self.running:
@@ -557,7 +557,7 @@ class YandexStationClient:
         finally:
             self.waiters.pop(request_id, None)  # Чистим Future после обработки
 
-    async def get_latest_message(self):
+    async def get_latest_message(self) -> dict[str, Any] | None:
         """Возвращает последнее сообщение из очереди или None, если пуста."""
         latest = self.queue[-1] if self.queue else None
         return latest
@@ -586,7 +586,7 @@ class YandexStationClient:
         self.state_updated.clear()
         return True
 
-    async def _cancel_tasks(self):
+    async def _cancel_tasks(self) -> None:
         """Отмена всех активных задач, чтобы избежать зависших WebSocket."""
 
         if not self.tasks:
@@ -604,7 +604,7 @@ class YandexStationClient:
         self.tasks.clear()
         logger.info("✅ Все фоновые задачи успешно отменены")
 
-    async def close(self):
+    async def close(self) -> None:
         """Закрытие WebSocket-соединения и фоновых задач."""
         self.running = False
 
@@ -664,7 +664,7 @@ class YandexStationClient:
         self.queue.clear()
         self.state_updated.clear()
 
-    def _log_software_version(self, software_version: str):
+    def _log_software_version(self, software_version: str) -> None:
         """Логирует версию ПО станции в файл, если она изменилась."""
         try:
             version_log_file_path = os.path.abspath(
@@ -699,7 +699,7 @@ class YandexStationClient:
         except Exception as e:
             logger.error(f"❌ Ошибка при записи версии ПО в лог: {e}")
 
-    def _fail_all_pending_futures(self, error: Exception):
+    def _fail_all_pending_futures(self, error: Exception) -> None:
         """Завершает все зависшие Future."""
         count = 0
         for request_id, (future, _) in list(self.waiters.items()):
@@ -712,7 +712,7 @@ class YandexStationClient:
                 f"❌ Завершено {count} зависших Future с ошибкой: {error}"
             )
 
-    def _check_duplicate_tasks(self):
+    def _check_duplicate_tasks(self) -> None:
         """Проверка на повторяющиеся задачи."""
         names = [
             getattr(t.get_coro(), "__name__", "unknown")

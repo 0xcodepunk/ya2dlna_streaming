@@ -20,7 +20,7 @@ def _get_manager(request: Request) -> MainStreamManager:
 
 
 @router.post("/stream_on")
-async def stream_on(request: Request):
+async def stream_on(request: Request) -> dict[str, str]:
     """API-команда для запуска стрима."""
     task = asyncio.create_task(_get_manager(request).start())
     _start_tasks.add(task)
@@ -29,7 +29,7 @@ async def stream_on(request: Request):
 
 
 @router.post("/shutdown")
-async def shutdown(request: Request):
+async def shutdown(request: Request) -> dict[str, str]:
     """API-команда для остановки стрима."""
     await _get_manager(request).stop()
     return {"status": "main_service stopped"}

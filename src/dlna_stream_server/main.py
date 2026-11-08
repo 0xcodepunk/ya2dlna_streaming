@@ -40,7 +40,7 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(main_router)
 
 
-def main():
+def main() -> None:
     """Запускает DLNA стриминговый сервер."""
     logger.info("▶️ Запуск dlna стримингового сервера...")
     uvicorn.run(
