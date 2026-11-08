@@ -59,6 +59,7 @@ async def test_track_type_from_station(raw_type, track_type, is_radio):
         ("LISTENING", AliceState.LISTENING),
         ("SPEAKING", AliceState.SPEAKING),
         ("BUSY", AliceState.BUSY),
+        ("NONE", AliceState.NONE),
         ("NEW_FIRMWARE_STATE", AliceState.OTHER),
     ],
 )

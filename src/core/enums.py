@@ -31,6 +31,8 @@ class AliceState(StrEnum):
     LISTENING = "LISTENING"
     SPEAKING = "SPEAKING"
     BUSY = "BUSY"
+    # Станция присылает между BUSY и IDLE: не молчит и не активна
+    NONE = "NONE"
     OTHER = "other"
 
     @classmethod
