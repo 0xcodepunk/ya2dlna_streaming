@@ -24,6 +24,7 @@ from yandex_station.exceptions import (
     StationNotFoundError,
 )
 from yandex_station.mdns_device_finder import DeviceFinder, StationDevice
+from yandex_station.models import StationMessage
 from yandex_station.station_store import StationDeviceStore
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,9 @@ class YandexStationClient:
         self.device_finder = device_finder
         self.device_token = device_token
         # Очередь для сообщений станции
-        self.queue: deque[dict[str, Any]] = deque(maxlen=buffer_size)
+        self.queue: deque[StationMessage] = deque(maxlen=buffer_size)
+        # Поля сообщений, о сбое разбора которых уже предупредили
+        self._logged_fallbacks: set[str] = set()
         self.waiters: dict[
             str, tuple[asyncio.Future[dict[str, Any]], float]
         ] = {}
@@ -410,8 +413,7 @@ class YandexStationClient:
 
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
-                    self.queue.append(data)
-                    self.state_updated.set()
+                    self._queue_station_message(data)
                     logger.debug("📨 Получено сообщение от станции")
 
                     # Если это ответ на команду, передаём в Future
@@ -478,6 +480,25 @@ class YandexStationClient:
 
         await self.command_queue.put("stop")
         logger.info("🛑 stream_station_messages завершен")
+
+    def _queue_station_message(self, data: dict[str, Any]) -> None:
+        """Разбирает сообщение станции и кладёт его в очередь состояния.
+
+        Args:
+            data (dict[str, Any]): Сообщение станции из JSON.
+        """
+        message, fallbacks = StationMessage.from_station(data)
+        # Сообщения идут несколько раз в секунду: о каждом поле
+        # предупреждаем один раз
+        for field, error in fallbacks.items():
+            if field not in self._logged_fallbacks:
+                self._logged_fallbacks.add(field)
+                logger.warning(
+                    f"⚠️ Поле станции {field} не разобрано, взято значение "
+                    f"по умолчанию: {error}"
+                )
+        self.queue.append(message)
+        self.state_updated.set()
 
     async def command_producer_handler(self) -> None:
         """Обрабатывает команды из очереди и отправляет их на станцию."""
@@ -557,7 +578,7 @@ class YandexStationClient:
         finally:
             self.waiters.pop(request_id, None)  # Чистим Future после обработки
 
-    async def get_latest_message(self) -> dict[str, Any] | None:
+    async def get_latest_message(self) -> StationMessage | None:
         """Возвращает последнее сообщение из очереди или None, если пуста."""
         latest = self.queue[-1] if self.queue else None
         return latest

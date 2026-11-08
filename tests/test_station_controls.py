@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.enums import AliceState, TrackType
+from yandex_station.models import StationMessage
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
@@ -20,12 +21,17 @@ BASE_PLAYER_STATE = {
 }
 
 
+def station_message(**state) -> StationMessage:
+    """Сообщение станции с полями состояния в виде станции (camelCase)."""
+    return StationMessage.model_validate({"state": state})
+
+
 def make_controls(player_state, **state) -> YandexStationControls:
     """Контролы станции с замоканным состоянием плеера."""
     ws_client = AsyncMock(spec=YandexStationClient)
-    ws_client.get_latest_message.return_value = {
-        "state": {"playerState": player_state, "playing": True, **state}
-    }
+    ws_client.get_latest_message.return_value = station_message(
+        playerState=player_state, playing=True, **state
+    )
     return YandexStationControls(
         ws_client=ws_client,
         protobuf=MagicMock(spec=Protobuf),
@@ -141,7 +147,7 @@ async def test_fade_returns_volume_seen_before_fade(monkeypatch):
 
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
     ws_client = AsyncMock(spec=YandexStationClient)
-    ws_client.get_latest_message.return_value = {"state": {"volume": 0.7}}
+    ws_client.get_latest_message.return_value = station_message(volume=0.7)
     controls = YandexStationControls(
         ws_client=ws_client,
         protobuf=MagicMock(spec=Protobuf),
@@ -162,7 +168,7 @@ def make_fading_controls(volume, alice_states):
     states = list(alice_states)
 
     async def latest():
-        return {"state": {"volume": volume, "aliceState": states[0]}}
+        return station_message(volume=volume, aliceState=states[0])
 
     async def send(command):
         if len(states) > 1:
@@ -210,9 +216,9 @@ async def test_fade_reads_late_volume_when_alice_already_listens(monkeypatch):
     async def late_command(delay):
         # К концу паузы станция сообщила команду прошлой реплики
         ws_client.get_latest_message.side_effect = None
-        ws_client.get_latest_message.return_value = {
-            "state": {"volume": 0.7, "aliceState": "LISTENING"}
-        }
+        ws_client.get_latest_message.return_value = station_message(
+            volume=0.7, aliceState="LISTENING"
+        )
 
     monkeypatch.setattr(asyncio, "sleep", late_command)
 
@@ -264,15 +270,15 @@ async def test_unmute_reports_level_until_station_confirms(monkeypatch):
 
     # Станция ещё сообщает прежний ноль: уровень в пути, второй раз не шлём
     ws_client.get_latest_message.side_effect = None
-    ws_client.get_latest_message.return_value = {"state": {"volume": 0.0}}
+    ws_client.get_latest_message.return_value = station_message(volume=0.0)
     await controls.get_volume()
     assert await controls.unmute()
     assert len(sent_volumes(controls)) == sent
 
     # Станция подтвердила уровень: новый ноль уже не наш, а с кнопки
-    ws_client.get_latest_message.return_value = {"state": {"volume": 0.6}}
+    ws_client.get_latest_message.return_value = station_message(volume=0.6)
     await controls.get_volume()
-    ws_client.get_latest_message.return_value = {"state": {"volume": 0.0}}
+    ws_client.get_latest_message.return_value = station_message(volume=0.0)
     await controls.get_volume()
     assert not await controls.unmute()
     assert not controls.level_unconfirmed
@@ -283,7 +289,7 @@ def report_volume(controls, volume):
     ws_client = controls._ws_client
     ws_client.get_latest_message.side_effect = None
     ws_client.get_latest_message.return_value = (
-        None if volume is None else {"state": {"volume": volume}}
+        None if volume is None else station_message(volume=volume)
     )
 
 

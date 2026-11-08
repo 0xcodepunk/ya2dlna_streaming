@@ -27,7 +27,7 @@ from yandex_station.constants import (
     STREAMING_FAILURE_STREAK_RESET,
     TRACK_SOURCE_TTL,
 )
-from yandex_station.models import Track
+from yandex_station.models import StationMessage, Track
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
@@ -218,7 +218,10 @@ async def test_unknown_station_values_keep_loop_running(fast_sleep):
         },
     }
     ws_client = AsyncMock(spec=YandexStationClient)
-    ws_client.get_latest_message.return_value = {"state": state}
+    # Сообщение собирается на каждый вызов: state меняется по ходу теста
+    ws_client.get_latest_message.side_effect = (
+        lambda: StationMessage.model_validate({"state": state})
+    )
     station = YandexStationControls(
         ws_client=ws_client, protobuf=MagicMock(spec=Protobuf)
     )
@@ -1781,7 +1784,9 @@ def make_restarted_manager(station_volume_file):
     station_volume_file.write_text("0.6")
     ws_client = AsyncMock(spec=YandexStationClient)
     ws_client.running = False
-    ws_client.get_latest_message.return_value = {"state": {"volume": 0.0}}
+    ws_client.get_latest_message.return_value = StationMessage.model_validate(
+        {"state": {"volume": 0.0}}
+    )
     station = YandexStationControls(
         ws_client=ws_client, protobuf=MagicMock(spec=Protobuf)
     )

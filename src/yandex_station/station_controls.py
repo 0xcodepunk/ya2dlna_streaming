@@ -5,14 +5,14 @@ from typing import Any
 
 from injector import inject
 
-from core.enums import AliceState, TrackType
+from core.enums import AliceState
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     FADE_TIME,
     STATION_VOLUME_STEP,
     TTS_REPEAT_PREFIX,
 )
-from yandex_station.models import Track
+from yandex_station.models import StationState, Track
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_ws_control import YandexStationClient
 from yandex_station.volume_store import StationVolumeStore
@@ -80,13 +80,11 @@ class YandexStationControls:
         """Произносит фразу голосом Алисы через локальный TTS."""
         await self.send_text(f"{TTS_REPEAT_PREFIX} {phrase}")
 
-    async def get_current_state(self) -> dict[str, Any] | None:
+    async def get_current_state(self) -> StationState | None:
         """Получение текущего состояния станции."""
         try:
-            state = await self._ws_client.get_latest_message()
-            if state:
-                return dict(state.get("state", {}))
-            return None
+            message = await self._ws_client.get_latest_message()
+            return message.state if message is not None else None
         except Exception as e:
             logger.error(
                 f"❌ Ошибка при получении текущего состояния станции: {e}"
@@ -96,12 +94,12 @@ class YandexStationControls:
     async def get_radio_url(self) -> str | None:
         """Получение URL радиостанции."""
         try:
-            data = await self._ws_client.get_latest_message()
-            if not data:
+            message = await self._ws_client.get_latest_message()
+            if message is None or message.extra.app_state is None:
                 return None
             # Навигация по reverse-engineered структуре protobuf —
             # технический шов, наружу уходит только str | None
-            state: Any = self._protobuf.loads(data["extra"]["appState"])
+            state: Any = self._protobuf.loads(message.extra.app_state)
             metaw = json.loads(state[6][3][7])
             item: Any = self._protobuf.loads(
                 metaw["scenario_meta"]["queue_item"]
@@ -118,78 +116,43 @@ class YandexStationControls:
     async def get_alice_state(self) -> AliceState | None:
         """Получение состояния Алисы (IDLE, LISTENING, SPEAKING...)."""
         try:
-            state = await self._ws_client.get_latest_message()
-            if not state:
-                return None
-            alice_state = state.get("state", {}).get("aliceState")
-            return AliceState(alice_state) if alice_state else None
+            state = await self.get_current_state()
+            return state.alice_state if state is not None else None
         except Exception as e:
             logger.error(f"❌ Ошибка при получении состояния Алиса: {e}")
             return None
 
-    async def get_player_status(self) -> dict[str, Any] | None:
-        """Получение состояния плеера с флагом playing."""
+    async def get_current_track(self) -> Track | None:
+        """Получение текущего трека.
+
+        Сообщение без плеера даёт трек по умолчанию с id "0": цикл
+        работает дальше. None — сообщений от станции ещё нет.
+        """
         try:
             state = await self.get_current_state()
             if state is None:
                 return None
-            player_state = dict(state.get("playerState", {}))
-            player_state["playing"] = state.get("playing", False)
-            return player_state
-        except Exception as e:
-            logger.error(f"❌ Ошибка при получении статуса плеера: {e}")
-            return None
-
-    async def get_current_track(self) -> Track | None:
-        """Получение текущего трека."""
-        try:
-            player_state = await self.get_player_status()
-            if not player_state:
-                return None
-            entity = player_state.get("entityInfo") or {}
+            player = state.player_state
             return Track(
-                id=str(player_state.get("id", "0")),
-                title=str(player_state.get("title", "")),
-                type=TrackType(player_state.get("type", "")),
-                artist=str(player_state.get("subtitle", "")),
-                duration=float(player_state.get("duration") or 0),
-                progress=float(player_state.get("progress") or 0),
-                playing=bool(player_state.get("playing", False)),
-                next_id=self._neighbor_track_id(entity, "next"),
-                prev_id=self._neighbor_track_id(entity, "prev"),
+                id=player.id,
+                title=player.title,
+                type=player.type,
+                artist=player.subtitle,
+                duration=player.duration,
+                progress=player.progress,
+                playing=state.playing,
+                next_id=player.entity_info.next.track_id,
+                prev_id=player.entity_info.prev.track_id,
             )
         except Exception as e:
             logger.error(f"❌ Ошибка при получении текущего трека: {e}")
             return None
 
-    @staticmethod
-    def _neighbor_track_id(entity: Any, key: str) -> str | None:
-        """Извлекает id соседнего трека из entityInfo станции.
-
-        Args:
-            entity (Any): Словарь entityInfo из playerState.
-            key (str): Ключ соседа: next или prev.
-        Returns:
-            str | None: Идентификатор, если сосед — трек.
-        """
-        if not isinstance(entity, dict):
-            return None
-        neighbor = entity.get(key)
-        if (
-            not isinstance(neighbor, dict)
-            or neighbor.get("type") != TrackType.TRACK
-        ):
-            return None
-        neighbor_id = neighbor.get("id")
-        return str(neighbor_id) if neighbor_id else None
-
     async def get_volume(self) -> float | None:
         """Получение текущего уровня громкости (0.0–1.0)."""
         try:
-            state = await self._ws_client.get_latest_message()
-            if not state:
-                return None
-            volume = state.get("state", {}).get("volume")
+            state = await self.get_current_state()
+            volume = state.volume if state is not None else None
             if volume is None:
                 return None
             logger.debug(

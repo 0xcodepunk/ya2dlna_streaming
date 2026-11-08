@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -6,6 +7,7 @@ import aiohttp
 import pytest
 
 from yandex_station.exceptions import ClientNotRunningError
+from yandex_station.models import StationMessage
 
 DEVICE_TOKEN = "secret-device-token"
 
@@ -317,7 +319,9 @@ async def test_wait_for_state_update_consumes_pending_notification(
 
 async def test_close_forgets_station_messages(mock_station_client):
     """Новый сеанс не читает сообщения прошлого и ждёт свежее."""
-    mock_station_client.queue.append({"state": {"volume": 0.1}})
+    mock_station_client.queue.append(
+        StationMessage.model_validate({"state": {"volume": 0.1}})
+    )
     mock_station_client.state_updated.set()
 
     await mock_station_client.close()
@@ -326,3 +330,37 @@ async def test_close_forgets_station_messages(mock_station_client):
     assert (
         await mock_station_client.wait_for_state_update(timeout=0.01) is False
     )
+
+
+async def test_station_messages_parsed_on_receive(mock_station_client, caplog):
+    """Плохое поле не бракует сообщение, а ответ на команду доходит."""
+    client = mock_station_client
+    answer = asyncio.get_running_loop().create_future()
+    client.waiters["cmd"] = (answer, 0.0)
+    messages = [
+        {"state": {"volume": 0.3}},
+        {"requestId": "cmd", "state": {"volume": "громко"}},
+        {"state": {"volume": "тихо"}},
+    ]
+    client.websocket = MagicMock(closed=False)
+    client.websocket.receive = AsyncMock(
+        side_effect=[
+            MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps(message))
+            for message in messages
+        ]
+        + [MagicMock(type=aiohttp.WSMsgType.CLOSE)]
+    )
+
+    await client.stream_station_messages()
+
+    assert [message.state.volume for message in client.queue] == [
+        0.3,
+        None,
+        None,
+    ]
+    # Ответ на команду отдаётся сырым словарём
+    assert answer.result() == messages[1]
+    # Сообщения идут часто: о плохом поле предупреждаем один раз
+    assert levels_of(caplog, "StationState.volume не разобрано") == [
+        logging.WARNING
+    ]
