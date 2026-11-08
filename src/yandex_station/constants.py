@@ -1,4 +1,8 @@
-ALICE_ACTIVE_STATES = {"LISTENING", "SPEAKING", "BUSY"}
+from core.enums import AliceState
+
+ALICE_ACTIVE_STATES = frozenset(
+    {AliceState.LISTENING, AliceState.SPEAKING, AliceState.BUSY}
+)
 
 RUARK_IDLE_VOLUME = 2
 

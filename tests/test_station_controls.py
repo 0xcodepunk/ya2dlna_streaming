@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from core.enums import AliceState, TrackType
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
@@ -19,16 +20,59 @@ BASE_PLAYER_STATE = {
 }
 
 
-def make_controls(player_state) -> YandexStationControls:
+def make_controls(player_state, **state) -> YandexStationControls:
     """Контролы станции с замоканным состоянием плеера."""
     ws_client = AsyncMock(spec=YandexStationClient)
     ws_client.get_latest_message.return_value = {
-        "state": {"playerState": player_state, "playing": True}
+        "state": {"playerState": player_state, "playing": True, **state}
     }
     return YandexStationControls(
         ws_client=ws_client,
         protobuf=MagicMock(spec=Protobuf),
     )
+
+
+@pytest.mark.parametrize(
+    ("raw_type", "track_type", "is_radio"),
+    [
+        ("Track", TrackType.TRACK, False),
+        ("FmRadio", TrackType.FM_RADIO, True),
+        # Тип, которого код не знает, например после обновления прошивки
+        ("Generative", TrackType.OTHER, False),
+        ("", TrackType.OTHER, False),
+    ],
+)
+async def test_track_type_from_station(raw_type, track_type, is_radio):
+    controls = make_controls({**BASE_PLAYER_STATE, "type": raw_type})
+
+    track = await controls.get_current_track()
+
+    assert track is not None
+    assert track.type is track_type
+    assert track.is_radio is is_radio
+
+
+@pytest.mark.parametrize(
+    ("raw_state", "alice_state"),
+    [
+        ("IDLE", AliceState.IDLE),
+        ("LISTENING", AliceState.LISTENING),
+        ("SPEAKING", AliceState.SPEAKING),
+        ("BUSY", AliceState.BUSY),
+        ("NEW_FIRMWARE_STATE", AliceState.OTHER),
+    ],
+)
+async def test_alice_state_from_station(raw_state, alice_state):
+    controls = make_controls(dict(BASE_PLAYER_STATE), aliceState=raw_state)
+
+    assert await controls.get_alice_state() is alice_state
+
+
+async def test_alice_state_without_field_is_none():
+    """Нет поля — состояние неизвестно, а не «прочее»."""
+    controls = make_controls(dict(BASE_PLAYER_STATE))
+
+    assert await controls.get_alice_state() is None
 
 
 async def test_current_track_carries_neighbor_ids():

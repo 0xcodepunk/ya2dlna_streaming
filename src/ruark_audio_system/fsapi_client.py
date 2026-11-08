@@ -12,7 +12,7 @@ from ruark_audio_system.exceptions import (
 logger = getLogger(__name__)
 
 SESSION_ID_REGEX = re.compile(r"<sessionId>(.*?)</sessionId>")
-POWER_STATUS_REGEX = re.compile(r"<value><u8>(.*?)</u8></value>")
+POWER_STATUS_REGEX = re.compile(r"<value><u8>([01])</u8></value>")
 VALUE_REGEX = re.compile(r"<value><\w+>(.*?)</\w+></value>")
 MODE_ITEM_REGEX = re.compile(r'<item key="(\d+)">(.*?)</item>', re.S)
 MODE_ID_REGEX = re.compile(r'<field name="id"><\w+>(.*?)</\w+></field>')
@@ -83,11 +83,11 @@ class RuarkFsApiClient:
         self._session_id = match.group(1)
         return self._session_id
 
-    async def get_power_status(self) -> str:
-        """Получение статуса питания ('1' — включено, '0' — выключено).
+    async def is_powered_on(self) -> bool:
+        """Проверяет, включено ли питание устройства.
 
         Raises:
-            RuarkApiError: Если запрос не удался или ответ без статуса.
+            RuarkApiError: Если запрос не удался или статус не 0 и не 1.
         """
         content = await self._get(
             f"/fsapi/GET/netRemote.sys.power"
@@ -96,34 +96,35 @@ class RuarkFsApiClient:
         match = POWER_STATUS_REGEX.search(content)
         if not match:
             raise RuarkApiError(
-                f"Ответ netRemote.sys.power без статуса: {content[:200]}"
+                f"Ответ netRemote.sys.power без статуса 0 или 1: "
+                f"{content[:200]}"
             )
         status = match.group(1)
         logger.info(f"🔌 Статус питания: {status}")
-        return status
+        return status == "1"
 
-    async def _set_power(self, value: int) -> bool:
+    async def _set_power(self, on: bool) -> bool:
         """Переключает питание и проверяет итоговый статус."""
         try:
             await self._get(
                 f"/fsapi/SET/netRemote.sys.power"
-                f"?pin={self._pin}&sid={self._session_id}&value={value}"
+                f"?pin={self._pin}&sid={self._session_id}&value={int(on)}"
             )
-            return await self.get_power_status() == str(value)
+            return await self.is_powered_on() == on
         except (RuarkApiError, RuarkDeviceNotFoundError) as e:
             logger.error(f"Ошибка при переключении питания: {e}")
             return False
 
     async def turn_power_on(self) -> bool:
         """Включение питания."""
-        success = await self._set_power(1)
+        success = await self._set_power(True)
         if success:
             logger.info("🔌 Питание включено")
         return success
 
     async def turn_power_off(self) -> bool:
         """Выключение питания."""
-        success = await self._set_power(0)
+        success = await self._set_power(False)
         if success:
             logger.info("🔌 Питание выключено")
         return success

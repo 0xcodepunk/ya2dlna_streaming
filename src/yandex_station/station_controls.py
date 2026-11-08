@@ -5,6 +5,7 @@ from typing import Any
 
 from injector import inject
 
+from core.enums import AliceState, TrackType
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     FADE_TIME,
@@ -113,14 +114,14 @@ class YandexStationControls:
             )
             return None
 
-    async def get_alice_state(self) -> str | None:
+    async def get_alice_state(self) -> AliceState | None:
         """Получение состояния Алисы (IDLE, LISTENING, SPEAKING...)."""
         try:
             state = await self._ws_client.get_latest_message()
             if not state:
                 return None
             alice_state = state.get("state", {}).get("aliceState")
-            return str(alice_state) if alice_state else None
+            return AliceState(alice_state) if alice_state else None
         except Exception as e:
             logger.error(f"❌ Ошибка при получении состояния Алиса: {e}")
             return None
@@ -148,7 +149,7 @@ class YandexStationControls:
             return Track(
                 id=str(player_state.get("id", "0")),
                 title=str(player_state.get("title", "")),
-                type=str(player_state.get("type", "")),
+                type=TrackType(player_state.get("type", "")),
                 artist=str(player_state.get("subtitle", "")),
                 duration=float(player_state.get("duration") or 0),
                 progress=float(player_state.get("progress") or 0),
@@ -173,7 +174,10 @@ class YandexStationControls:
         if not isinstance(entity, dict):
             return None
         neighbor = entity.get(key)
-        if not isinstance(neighbor, dict) or neighbor.get("type") != "Track":
+        if (
+            not isinstance(neighbor, dict)
+            or neighbor.get("type") != TrackType.TRACK
+        ):
             return None
         neighbor_id = neighbor.get("id")
         return str(neighbor_id) if neighbor_id else None

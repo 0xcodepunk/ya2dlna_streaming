@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from core.enums import TrackType
+
 
 @dataclass
 class Track:
@@ -7,7 +9,7 @@ class Track:
 
     id: str
     title: str
-    type: str
+    type: TrackType
     artist: str
     duration: float
     progress: float
@@ -15,3 +17,8 @@ class Track:
     # Соседние треки очереди станции (entityInfo) — для предзагрузки
     next_id: str | None = None
     prev_id: str | None = None
+
+    @property
+    def is_radio(self) -> bool:
+        """Станция играет радио, а не трек."""
+        return self.type == TrackType.FM_RADIO

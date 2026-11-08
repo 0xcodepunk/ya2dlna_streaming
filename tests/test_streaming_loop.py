@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.config.settings import settings
-from core.enums import Codec
+from core.enums import AliceState, Codec, TrackType
 from main_stream_service.main_stream_manager import (
     RUARK_SILENT_PHRASE,
     MainStreamManager,
@@ -50,7 +50,7 @@ def make_track(**kwargs) -> Track:
     defaults = dict(
         id="42",
         title="title",
-        type="Track",
+        type=TrackType.TRACK,
         artist="artist",
         duration=200.0,
         progress=10.0,
@@ -102,7 +102,7 @@ def make_ruark(is_playing=True, volume=20):
     ruark = AsyncMock(spec=RuarkR5Controller)
     ruark.get_volume.return_value = volume
     ruark.is_playing.return_value = is_playing
-    ruark.get_power_status.return_value = "1"
+    ruark.is_powered_on.return_value = True
     ruark.get_session_id.return_value = "sid"
     return ruark
 
@@ -186,7 +186,7 @@ async def test_new_track_sent_to_stream_server(fast_sleep):
 
 
 async def test_radio_track_sent_with_radio_flag(fast_sleep):
-    track = make_track(id="fm_jazz", type="FmRadio", duration=0.0)
+    track = make_track(id="fm_jazz", type=TrackType.FM_RADIO, duration=0.0)
     station = make_station_controls(track)
     manager = make_manager(station, make_ruark(is_playing=False))
 
@@ -202,12 +202,54 @@ async def test_radio_track_sent_with_radio_flag(fast_sleep):
         assert call.kwargs["radio"] is True
 
 
+async def test_unknown_station_values_keep_loop_running(fast_sleep):
+    """Неизвестные aliceState и type — «прочее», цикл работает дальше."""
+    state = {
+        "aliceState": "NEW_FIRMWARE_STATE",
+        "playing": True,
+        "volume": 0.0,
+        "playerState": {
+            "id": "42",
+            "title": "title",
+            "type": "Generative",
+            "subtitle": "artist",
+            "duration": 200,
+            "progress": 2,
+        },
+    }
+    ws_client = AsyncMock(spec=YandexStationClient)
+    ws_client.get_latest_message.return_value = {"state": state}
+    station = YandexStationControls(
+        ws_client=ws_client, protobuf=MagicMock(spec=Protobuf)
+    )
+    ruark = make_ruark()
+    manager = make_manager(station, ruark)
+    send = manager._send_track_to_stream_server
+
+    def alice_goes_idle_later():
+        # Несколько витков в неизвестном состоянии, затем Алиса молчит
+        if ws_client.get_latest_message.await_count > 20:
+            state["aliceState"] = "IDLE"
+        return send.called
+
+    await drive_streaming(manager, until=alice_goes_idle_later)
+
+    # Трек неизвестного типа уходит на стрим-сервер как обычный трек
+    send.assert_called_once()
+    assert send.call_args.kwargs["radio"] is False
+    # Неизвестное состояние Алисы не активное: Ruark не приглушался
+    ruark.set_volume.assert_not_called()
+
+
 async def test_silent_radio_not_respammed_within_grace(fast_sleep):
     """Молчащий Ruark на радио не бомбардируется перепривязками."""
     # Прогресс радио тикает каждую итерацию — как на живой станции
     tracks = [
         make_track(
-            id="fm_jazz", type="FmRadio", duration=0.0, progress=float(p)
+            id="fm_jazz",
+            type=TrackType.FM_RADIO,
+            duration=0.0,
+            progress=float(p),
         )
         for p in range(1, 60)
     ]
@@ -228,7 +270,10 @@ async def test_silent_radio_resent_after_grace(fast_sleep, monkeypatch):
     )
     tracks = [
         make_track(
-            id="fm_jazz", type="FmRadio", duration=0.0, progress=float(p)
+            id="fm_jazz",
+            type=TrackType.FM_RADIO,
+            duration=0.0,
+            progress=float(p),
         )
         for p in range(1, 60)
     ]
@@ -366,7 +411,7 @@ async def test_resync_ignores_stale_progress_snapshot():
     manager = make_manager(make_station_controls(make_track()), make_ruark())
     ctx = _CycleContext(
         last_track=make_track(progress=0.0),
-        last_alice_state="IDLE",
+        last_alice_state=AliceState.IDLE,
         last_track_progress=0.0,
         last_progress_at=time.monotonic() - 6.0,  # снапшот протух на 6с
         last_track_playing=True,
@@ -382,7 +427,7 @@ async def test_resync_detects_real_jump_with_fresh_snapshot():
     manager = make_manager(make_station_controls(make_track()), make_ruark())
     ctx = _CycleContext(
         last_track=make_track(progress=10.0),
-        last_alice_state="IDLE",
+        last_alice_state=AliceState.IDLE,
         last_track_progress=10.0,
         last_progress_at=time.monotonic() - 0.5,
         last_track_playing=True,
@@ -598,7 +643,7 @@ async def test_powered_off_ruark_stops_streaming(fast_sleep, monkeypatch):
     track = make_track(progress=50.0)
     station = make_station_controls(track)
     ruark = make_ruark(is_playing=False)
-    ruark.get_power_status.return_value = "0"
+    ruark.is_powered_on.return_value = False
     manager = make_manager(station, ruark)
     manager._stop_stream_on_stream_server = AsyncMock()
     send = manager._send_track_to_stream_server
@@ -646,7 +691,7 @@ def make_idle_ctx(idle_minutes: float) -> _CycleContext:
     """Контекст цикла, в котором станция не играет заданное число минут."""
     return _CycleContext(
         last_track=make_track(playing=False),
-        last_alice_state="IDLE",
+        last_alice_state=AliceState.IDLE,
         idle_since=time.monotonic() - idle_minutes * 60,
     )
 
@@ -775,7 +820,7 @@ async def test_resync_reuses_cached_source(fast_sleep):
 async def test_radio_neighbors_not_prefetched(fast_sleep):
     """Для радио предзагрузка соседних треков не запускается."""
     track = make_track(
-        id="fm_jazz", type="FmRadio", duration=0.0, next_id="43"
+        id="fm_jazz", type=TrackType.FM_RADIO, duration=0.0, next_id="43"
     )
     station = make_station_controls(track)
     manager = make_manager(station, make_ruark(is_playing=False))
@@ -874,7 +919,7 @@ async def test_double_start_runs_one_session(fast_sleep, caplog):
 
 async def test_stop_during_start_leaves_stream_off(fast_sleep):
     """«Выключи стрим» во время запуска — по итогу стрим выключен."""
-    manager, ruark = make_stopping_manager(power_status="0")
+    manager, ruark = make_stopping_manager(powered_on=False)
     station = manager._station_controls
     ruark_found = hold_ruark_search(ruark)
 
@@ -1018,11 +1063,11 @@ async def test_stop_survives_unreachable_ruark():
     station.stop_ws_client.assert_called()
 
 
-def make_stopping_manager(power_status="1"):
+def make_stopping_manager(powered_on=True):
     """Менеджер, готовый к stop(), с Ruark в заданном состоянии питания."""
     station = make_station_controls(make_track())
     ruark = make_ruark()
-    ruark.get_power_status.return_value = power_status
+    ruark.is_powered_on.return_value = powered_on
     manager = make_manager(station, ruark)
     manager._stop_stream_on_stream_server = AsyncMock()
     manager._volume_store = MagicMock()
@@ -1042,7 +1087,7 @@ async def test_stop_leaves_ruark_in_line_in_before_power_off():
 
 async def test_stop_does_not_wake_powered_off_ruark_for_mode():
     """Выключенный пользователем Ruark ради режима не будится."""
-    manager, ruark = make_stopping_manager(power_status="0")
+    manager, ruark = make_stopping_manager(powered_on=False)
 
     await manager.stop()
 
@@ -1750,10 +1795,12 @@ async def test_restarted_api_counts_voice_volume_from_saved_level(
 ):
     """Первая реплика: станции вернулся уровень, от него считаются команды."""
     manager, ws_client = make_restarted_manager(station_volume_file)
-    ctx = _CycleContext(last_track=make_track(), last_alice_state="IDLE")
+    ctx = _CycleContext(
+        last_track=make_track(), last_alice_state=AliceState.IDLE
+    )
 
     await manager._prepare_devices()
-    await manager._duck_ruark_on_alice_speech("LISTENING", ctx)
+    await manager._duck_ruark_on_alice_speech(AliceState.LISTENING, ctx)
 
     assert ctx.reply_volume == 0.6
     ws_client.send_command.assert_awaited_once_with(
