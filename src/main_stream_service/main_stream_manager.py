@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 from injector import inject
 
+from core.backoff import ExponentialBackoff
 from core.config.settings import settings
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.constants import RUARK_RESTING_MODE
@@ -26,6 +27,7 @@ from yandex_station.constants import (
     RUARK_MIN_START_VOLUME,
     RUARK_MIN_VOICE_VOLUME,
     RUARK_OUTAGE_PATIENCE,
+    RUARK_RETRY_INTERVAL,
     RUARK_VOLUME_PER_STATION_STEP,
     SILENCE_CHECK_INTERVAL,
     SILENCE_RESEND_GRACE,
@@ -35,6 +37,7 @@ from yandex_station.constants import (
     STREAMING_FAILURE_ANNOUNCE_AFTER,
     STREAMING_FAILURE_STREAK_RESET,
     STREAMING_RESTART_DELAY,
+    STREAMING_RESTART_MAX_DELAY,
     TRACK_SOURCE_CACHE_SIZE,
     TRACK_SOURCE_TTL,
 )
@@ -1021,13 +1024,20 @@ class MainStreamManager:
     async def _wrap_streaming(self):
         """Следит за потоком стриминга и перезапускает его при падении.
 
-        Серия быстрых падений подряд означает, что сам перезапуск
-        не помогает (например, умер DLNA-сервер) — один раз
-        озвучивается ошибка, чтобы тишина не осталась без объяснения.
+        Пауза перед перезапуском растёт до потолка, пока цикл падает
+        вскоре после старта. Серия быстрых падений подряд означает,
+        что сам перезапуск не помогает (например, умер DLNA-сервер) —
+        один раз озвучивается ошибка, чтобы тишина не осталась без
+        объяснения.
         """
         failure_streak = 0
-        last_failure_at = 0.0
+        backoff = ExponentialBackoff(
+            STREAMING_RESTART_DELAY, STREAMING_RESTART_MAX_DELAY
+        )
         while self._stream_state_running:
+            # Серию рвёт только работа цикла без падения: растущая
+            # пауза перед перезапуском в этот срок не входит
+            started_at = time.monotonic()
             try:
                 logger.info("🚀 Запуск потока стриминга")
                 await self.streaming()
@@ -1037,20 +1047,18 @@ class MainStreamManager:
             except Exception as e:
                 logger.error(f"❌ Поток стриминга упал с ошибкой: {e}")
                 now = time.monotonic()
-                if now - last_failure_at > STREAMING_FAILURE_STREAK_RESET:
+                if now - started_at > STREAMING_FAILURE_STREAK_RESET:
                     failure_streak = 0
-                last_failure_at = now
+                    backoff.reset()
                 failure_streak += 1
                 if failure_streak == STREAMING_FAILURE_ANNOUNCE_AFTER:
                     # Станция замьючена стримом — вернуть звук,
                     # иначе объявление не услышать
                     await self._safe_stop_step(self._station_controls.unmute)
                     await self._announce_error(STREAM_BROKEN_PHRASE)
-                logger.info(
-                    f"🔁 Перезапуск стриминга через "
-                    f"{STREAMING_RESTART_DELAY} секунд..."
-                )
-                await asyncio.sleep(STREAMING_RESTART_DELAY)
+                delay = backoff.next_delay()
+                logger.info(f"🔁 Перезапуск стриминга через {delay} секунд...")
+                await asyncio.sleep(delay)
                 logger.debug("🔄 Перезапуск потока после падения")
 
     async def _announce_error(self, phrase: str) -> None:
@@ -1106,7 +1114,7 @@ class MainStreamManager:
                 return
             except (RuarkApiError, RuarkUnavailableError) as e:
                 await self._note_ruark_outage(e)
-                await asyncio.sleep(STREAMING_RESTART_DELAY)
+                await asyncio.sleep(RUARK_RETRY_INTERVAL)
 
     async def _prepare_devices(self):
         logger.info("🔧 Подготовка устройств к стримингу...")
