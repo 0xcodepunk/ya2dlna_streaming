@@ -3,6 +3,7 @@ from itertools import count
 from logging import getLogger
 
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import StreamingResponse
 
 from core.enums import Codec
 from dlna_stream_server.handlers.stream_handler import StreamHandler
@@ -34,7 +35,7 @@ async def _handle_stream_task(
     start_position: float = 0.0,
     title: str = "",
     artist: str = "",
-):
+) -> None:
     """Обработчик задачи потока с логированием ошибок."""
     try:
         await stream_handler.play_stream(
@@ -57,7 +58,7 @@ async def set_stream(
     start_position: float = 0.0,
     title: str = "",
     artist: str = "",
-):
+) -> dict[str, str]:
     """Принимает URL трека и запускает потоковую передачу на Ruark.
 
     codec обязателен: неизвестный или пропущенный FastAPI отвергает
@@ -102,14 +103,16 @@ async def set_stream(
 
 
 @router.get("/live_stream.mp3")
-async def serve_stream(request: Request, radio: bool = False):
+async def serve_stream(
+    request: Request, radio: bool = False
+) -> StreamingResponse:
     """Раздает потоковый аудиофайл через HTTP."""
     await ruark_r5_request_logger(request)
     return await _get_stream_handler(request).stream_audio(radio)
 
 
 @router.head("/live_stream.mp3")
-async def serve_head(request: Request, radio: bool = False):
+async def serve_head(request: Request, radio: bool = False) -> Response:
     """Обрабатывает HEAD-запрос для Ruark R5 с корректными заголовками."""
     headers = {
         "Content-Type": _get_stream_handler(request).stream_media_type,
@@ -120,7 +123,7 @@ async def serve_head(request: Request, radio: bool = False):
 
 
 @router.post("/stop_stream")
-async def stop_stream(request: Request):
+async def stop_stream(request: Request) -> dict[str, str]:
     """Останавливает потоковую передачу на Ruark."""
     logger.info("🛑 Остановка потоковой передачи...")
     await _get_stream_handler(request).stop_ffmpeg()

@@ -25,7 +25,7 @@ class StationDevice(TypedDict):
 class DeviceFinder(ServiceListener):
     """Класс для поиска устройств Yandex Station в сети."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.device: StationDevice | None = None
         self.zeroconf = Zeroconf()
         self.browser: ServiceBrowser | None = None
@@ -88,6 +88,6 @@ class DeviceFinder(ServiceListener):
         except Exception as e:
             logger.error(f"Error: {e}")
 
-    def close(self):
+    def close(self) -> None:
         """Закрытие zeroconf."""
         self.zeroconf.close()

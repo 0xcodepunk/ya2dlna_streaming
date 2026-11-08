@@ -30,7 +30,7 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(main_router)
 
 
-def main():
+def main() -> None:
     """Запускает API сервер управления стримингом."""
     logger.info("▶️ Запуск API сервера...")
     uvicorn.run(

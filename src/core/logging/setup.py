@@ -9,7 +9,7 @@ LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 
-def setup_logging(service_name: str = "app"):
+def setup_logging(service_name: str = "app") -> None:
     """Настройка логирования.
 
     Args:

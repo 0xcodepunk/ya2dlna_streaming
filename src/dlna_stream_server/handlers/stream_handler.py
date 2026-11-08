@@ -2,7 +2,14 @@ import asyncio
 import os
 import time
 from logging import getLogger
-from typing import Any, Awaitable, Callable, Sequence, assert_never
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Sequence,
+    assert_never,
+)
 
 import aiohttp
 from fastapi import HTTPException
@@ -241,7 +248,7 @@ class StreamHandler:
         self._client_epoch += 1
         client_epoch = self._client_epoch
 
-        async def generate():
+        async def generate() -> AsyncIterator[bytes]:
             try:
                 empty_count = 0
                 # Счётчик таймаутов для снижения шума в логах

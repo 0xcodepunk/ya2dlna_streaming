@@ -282,14 +282,16 @@ class RuarkR5Controller:
             return parsed_url.hostname
         return None
 
-    def print_available_services(self):
+    def print_available_services(self) -> None:
         """Выводит список всех поддерживаемых сервисов."""
         logger.info("\n📡 Доступные UPnP сервисы:")
         for service in self.services:
             logger.info(f" - {service}")
 
     #  ConnectionManager
-    async def get_protocol_info(self, connection_manager) -> Dict[str, str]:
+    async def get_protocol_info(
+        self, connection_manager: Any
+    ) -> Dict[str, str]:
         """Получение списка поддерживаемых форматов."""
         return await asyncio.to_thread(self.connection_manager.GetProtocolInfo)
 
@@ -452,7 +454,7 @@ class RuarkR5Controller:
         min_volume: int = 2,
         step: int = 6,
         delay: float = 0.1,
-    ):
+    ) -> None:
         """Плавное уменьшение громкости Ruark в несколько шагов."""
         volume = start_volume - start_volume % 2
 
