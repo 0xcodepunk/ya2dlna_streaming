@@ -23,6 +23,7 @@ from yandex_station.constants import (
     RUARK_VOLUME_PER_STATION_STEP,
     SILENT_RESEND_LIMIT,
     STREAM_POLL_INTERVAL,
+    STREAMING_FAILURE_STREAK_RESET,
     TRACK_SOURCE_TTL,
 )
 from yandex_station.models import Track
@@ -896,12 +897,8 @@ async def test_stop_during_start_leaves_stream_off(fast_sleep):
     station.get_current_track.assert_not_awaited()
 
 
-async def test_repeated_crashes_announce_error_once(fast_sleep, monkeypatch):
+async def test_repeated_crashes_announce_error_once(fast_sleep):
     """Серия падений цикла — одно голосовое уведомление, без спама."""
-    monkeypatch.setattr(
-        "main_stream_service.main_stream_manager.STREAMING_RESTART_DELAY",
-        0.0,
-    )
     station = make_station_controls(make_track())
     manager = make_manager(station, make_ruark())
     manager.streaming = AsyncMock(side_effect=RuntimeError("бум"))
@@ -923,12 +920,8 @@ async def test_repeated_crashes_announce_error_once(fast_sleep, monkeypatch):
     station.unmute.assert_called()
 
 
-async def test_short_failure_streak_stays_silent(fast_sleep, monkeypatch):
+async def test_short_failure_streak_stays_silent(fast_sleep):
     """Пара падений с восстановлением — голосовое уведомление не нужно."""
-    monkeypatch.setattr(
-        "main_stream_service.main_stream_manager.STREAMING_RESTART_DELAY",
-        0.0,
-    )
     station = make_station_controls(make_track())
     manager = make_manager(station, make_ruark())
     calls = {"count": 0}
@@ -945,6 +938,63 @@ async def test_short_failure_streak_stays_silent(fast_sleep, monkeypatch):
     await manager._wrap_streaming()
 
     station.say.assert_not_called()
+
+
+async def test_crash_restart_delays_grow_up_to_ceiling(monkeypatch):
+    """Цикл падает раз за разом — пауза перед перезапуском растёт до 30 с."""
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+    manager.streaming = AsyncMock(side_effect=RuntimeError("бум"))
+    manager._stream_state_running = True
+    delays = record_sleeps(monkeypatch, manager, stop_after=7)
+
+    await manager._wrap_streaming()
+
+    assert delays == [1, 2, 4, 8, 16, 30, 30]
+
+
+async def test_crash_after_quiet_period_restarts_fast(monkeypatch):
+    """Цикл долго не падал — пауза перед перезапуском снова стартовая."""
+    clock = freeze_clock(monkeypatch)
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+    runs = itertools.count(1)
+
+    async def crash():
+        # Четвёртый запуск продержался дольше порога сброса серии
+        if next(runs) == 4:
+            clock[0] += STREAMING_FAILURE_STREAK_RESET + 1
+        raise RuntimeError("бум")
+
+    manager.streaming = crash
+    manager._stream_state_running = True
+    delays = record_sleeps(monkeypatch, manager, stop_after=5)
+
+    await manager._wrap_streaming()
+
+    # После паузы 4 с цикл работал минуту — снова секунда, а не 8
+    assert delays == [1, 2, 4, 1, 2]
+
+
+async def test_slow_crashes_hold_ceiling_and_announce_once(monkeypatch):
+    """Цикл падает после 35 с работы — серия не рвётся из-за паузы."""
+    clock = freeze_clock(monkeypatch)
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+
+    async def crash():
+        # Короче порога сброса, но вместе с паузой 30 с — длиннее
+        clock[0] += 35.0
+        raise RuntimeError("бум")
+
+    manager.streaming = crash
+    manager._stream_state_running = True
+    delays = record_sleeps(monkeypatch, manager, stop_after=9, clock=clock)
+
+    await manager._wrap_streaming()
+
+    assert delays == [1, 2, 4, 8, 16, 30, 30, 30, 30]
+    station.say.assert_awaited_once()
 
 
 async def test_stop_survives_unreachable_ruark():
@@ -1750,6 +1800,24 @@ def freeze_clock(monkeypatch) -> list[float]:
     return clock
 
 
+def record_sleeps(monkeypatch, manager, stop_after=None, clock=None):
+    """Копит паузы asyncio.sleep и гасит стрим на stop_after-й паузе.
+
+    С часами из freeze_clock пауза двигает время менеджера.
+    """
+    delays = []
+
+    async def fake_sleep(delay, *args, **kwargs):
+        delays.append(delay)
+        if clock is not None:
+            clock[0] += delay
+        if len(delays) == stop_after:
+            manager._stream_state_running = False
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return delays
+
+
 def fail_volume_restore(ruark, times, on_failure=None):
     """Приглушение проходит, а возврат громкости зависает times раз."""
     failures = []
@@ -1933,3 +2001,22 @@ async def test_prepare_waits_for_rebooting_ruark(fast_sleep):
 
     assert ruark.get_session_id.await_count == 2
     station.say.assert_not_called()
+
+
+async def test_prepare_retries_hung_ruark_at_constant_interval(monkeypatch):
+    """Ожидание Ruark в подготовке идёт с постоянной паузой, без роста."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.RUARK_RETRY_INTERVAL", 0.25
+    )
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.get_volume.side_effect = scripted(
+        unavailable(), unavailable(), unavailable(), 39
+    )
+    manager = make_manager(station, ruark)
+    manager._stream_state_running = True
+    delays = record_sleeps(monkeypatch, manager)
+
+    await manager._prepare_devices_patiently()
+
+    assert delays == [0.25, 0.25, 0.25]
