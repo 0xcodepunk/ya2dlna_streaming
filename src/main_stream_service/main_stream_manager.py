@@ -1113,6 +1113,7 @@ class MainStreamManager:
                 await asyncio.sleep(RUARK_RETRY_INTERVAL)
 
     async def _prepare_devices(self) -> None:
+        """Готовит станцию и Ruark к стримингу: громкость и питание."""
         logger.info("🔧 Подготовка устройств к стримингу...")
         # Ждём первое сообщение станции вместо фиксированной паузы:
         # обычно оно приходит сразу после подключения WebSocket

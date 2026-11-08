@@ -50,6 +50,7 @@ class YandexStationControls:
         await self._ws_client.run_once()
 
     async def stop_ws_client(self) -> None:
+        """Остановка WebSocket-клиента."""
         if not self._ws_client.running:
             logger.info("⚠️ WebSocket-клиент уже полностью остановлен")
             return
