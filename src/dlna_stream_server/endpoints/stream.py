@@ -1,4 +1,5 @@
 import asyncio
+from itertools import count
 from logging import getLogger
 
 from fastapi import APIRouter, Request, Response
@@ -14,6 +15,9 @@ router = APIRouter()
 
 # Словарь для отслеживания активных задач
 _active_tasks: dict[str, asyncio.Task[None]] = {}
+# Номера задач не повторяются: иначе finally отменённой задачи удалил бы
+# запись новой с тем же id, и следующий запрос её не отменил бы
+_task_numbers = count()
 
 
 def _get_stream_handler(request: Request) -> StreamHandler:
@@ -66,8 +70,7 @@ async def set_stream(
         f"(позиция: {start_position:.1f}s)"
     )
 
-    # Генерируем уникальный ID для задачи
-    task_id = f"stream_{len(_active_tasks)}"
+    task_id = f"stream_{next(_task_numbers)}"
 
     # Отменяем предыдущие активные задачи
     for old_task_id, old_task in list(_active_tasks.items()):
