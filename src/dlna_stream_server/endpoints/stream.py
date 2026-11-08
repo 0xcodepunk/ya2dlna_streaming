@@ -3,6 +3,7 @@ from logging import getLogger
 
 from fastapi import APIRouter, Request, Response
 
+from core.enums import Codec
 from dlna_stream_server.handlers.stream_handler import StreamHandler
 from dlna_stream_server.handlers.utils import ruark_r5_request_logger
 
@@ -23,17 +24,17 @@ def _get_stream_handler(request: Request) -> StreamHandler:
 async def _handle_stream_task(
     stream_handler: StreamHandler,
     yandex_url: str,
+    codec: Codec,
     task_id: str,
     radio: bool = False,
     start_position: float = 0.0,
     title: str = "",
     artist: str = "",
-    codec: str = "mp3",
 ):
     """Обработчик задачи потока с логированием ошибок."""
     try:
         await stream_handler.play_stream(
-            yandex_url, radio, start_position, title, artist, codec
+            yandex_url, codec, radio, start_position, title, artist
         )
         logger.info(f"✅ Задача потока {task_id} завершена успешно")
     except Exception as e:
@@ -47,17 +48,18 @@ async def _handle_stream_task(
 async def set_stream(
     request: Request,
     yandex_url: str,
+    codec: Codec,
     radio: bool = False,
     start_position: float = 0.0,
     title: str = "",
     artist: str = "",
-    codec: str = "mp3",
 ):
     """Принимает URL трека и запускает потоковую передачу на Ruark.
 
-    start_position — позиция старта в секундах для ресинка (повтор,
-    перемотка, продолжение после паузы); title и artist показываются
-    на дисплее Ruark.
+    codec обязателен: неизвестный или пропущенный FastAPI отвергает
+    с 422. start_position — позиция старта в секундах для ресинка
+    (повтор, перемотка, продолжение после паузы); title и artist
+    показываются на дисплее Ruark.
     """
     logger.info(
         f"📥 Запуск нового потока с {yandex_url} "
@@ -79,12 +81,12 @@ async def set_stream(
         _handle_stream_task(
             _get_stream_handler(request),
             yandex_url,
+            codec,
             task_id,
             radio,
             start_position,
             title,
             artist,
-            codec,
         )
     )
     _active_tasks[task_id] = task

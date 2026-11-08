@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from core.config.settings import settings
+from core.enums import Codec
 from main_stream_service.yandex_music_api import YandexMusicAPI
 
 
@@ -67,7 +68,7 @@ async def test_get_track_source_prefers_lossless(monkeypatch):
     source = await api.get_track_source("42", quality="320")
 
     assert source is not None
-    assert source.codec == "flac"
+    assert source.codec is Codec.FLAC
     assert source.url == "https://cdn/flac-url"
 
 
@@ -79,7 +80,7 @@ async def test_get_track_source_falls_back_to_mp3(monkeypatch):
     source = await api.get_track_source("42", quality="320")
 
     assert source is not None
-    assert source.codec == "mp3"
+    assert source.codec is Codec.MP3
     assert source.url == "link-320"
 
 
@@ -98,7 +99,7 @@ async def test_get_track_source_ignores_aac_masquerading_as_best(
     source = await api.get_track_source("42", quality="320")
 
     assert source is not None
-    assert source.codec == "mp3"
+    assert source.codec is Codec.MP3
     assert source.url == "link-mp3-192"
 
 
@@ -115,7 +116,7 @@ async def test_get_track_source_rescues_with_lossless_without_mp3(
     source = await api.get_track_source("42", quality="320")
 
     assert source is not None
-    assert source.codec == "flac"
+    assert source.codec is Codec.FLAC
     assert source.url == "https://cdn/flac"
 
 
@@ -128,5 +129,5 @@ async def test_get_track_source_skips_lossless_when_disabled(monkeypatch):
     source = await api.get_track_source("42", quality="320")
 
     assert source is not None
-    assert source.codec == "mp3"
+    assert source.codec is Codec.MP3
     lossless_mock.assert_not_awaited()

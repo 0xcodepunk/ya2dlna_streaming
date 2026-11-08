@@ -22,6 +22,7 @@ dev = [
     "flake8-bugbear",
     "flake8-docstrings",
     "flake8-isort",
+    "httpx==0.28.1",
     "isort",
     "mypy",
     "pytest==8.3.5",

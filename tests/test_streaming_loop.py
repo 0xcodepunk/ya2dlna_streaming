@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.config.settings import settings
+from core.enums import Codec
 from main_stream_service.main_stream_manager import (
     RUARK_SILENT_PHRASE,
     MainStreamManager,
@@ -110,7 +111,7 @@ def make_manager(station_controls, ruark, track_url="http://track/url"):
     music_api = AsyncMock(spec=YandexMusicAPI)
     music_api.get_file_info.return_value = track_url
     music_api.get_track_source.return_value = (
-        TrackSource(url=track_url, codec="mp3") if track_url else None
+        TrackSource(url=track_url, codec=Codec.MP3) if track_url else None
     )
     ws_client = MagicMock()
 
@@ -135,7 +136,7 @@ def set_source_by_id(manager):
     """Источник с уникальной ссылкой по id — чтобы отличать треки."""
 
     async def resolver(track_id, quality=None):
-        return TrackSource(url=f"http://track/{track_id}", codec="mp3")
+        return TrackSource(url=f"http://track/{track_id}", codec=Codec.MP3)
 
     manager._yandex_music_api.get_track_source.side_effect = resolver
 
@@ -197,6 +198,7 @@ async def test_radio_track_sent_with_radio_flag(fast_sleep):
     assert manager._send_track_to_stream_server.called
     for call in manager._send_track_to_stream_server.call_args_list:
         assert call.args[0].url == "http://radio/master.m3u8"
+        assert call.args[0].codec is Codec.AAC
         assert call.kwargs["radio"] is True
 
 
@@ -786,7 +788,7 @@ async def test_radio_neighbors_not_prefetched(fast_sleep):
 async def test_cached_source_expires_after_ttl():
     """Протухшая запись кеша не используется и удаляется."""
     manager = make_manager(make_station_controls(make_track()), make_ruark())
-    stale = TrackSource(url="http://track/old", codec="mp3")
+    stale = TrackSource(url="http://track/old", codec=Codec.MP3)
     manager._source_cache["42"] = (
         stale,
         time.monotonic() - TRACK_SOURCE_TTL - 1.0,
@@ -1620,7 +1622,7 @@ async def test_restart_after_reply_keeps_source_codec(fast_sleep):
     )
     manager = make_voice_manager(station, make_ruark(is_playing=False))
     manager._yandex_music_api.get_track_source.return_value = TrackSource(
-        url="http://track/flac", codec="flac"
+        url="http://track/flac", codec=Codec.FLAC
     )
     send = manager._send_track_to_stream_server
 
@@ -1628,7 +1630,7 @@ async def test_restart_after_reply_keeps_source_codec(fast_sleep):
 
     restart_call = send.call_args_list[1]
     assert restart_call.args[0] == TrackSource(
-        url="http://track/flac", codec="flac"
+        url="http://track/flac", codec=Codec.FLAC
     )
     assert restart_call.kwargs["start_position"] == pytest.approx(50.0)
 

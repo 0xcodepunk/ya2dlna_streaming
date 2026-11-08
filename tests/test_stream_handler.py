@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
+from core.enums import Codec
 from dlna_stream_server.handlers import ffmpeg_supervisor
 from dlna_stream_server.handlers import stream_handler as stream_handler_module
 from dlna_stream_server.handlers.constants import FFMPEG_MP3_PARAMS
+from dlna_stream_server.handlers.exceptions import UnsupportedCodecError
 from dlna_stream_server.handlers.ffmpeg_supervisor import FfmpegSupervisor
 from dlna_stream_server.handlers.stream_handler import (
     StreamHandler,
@@ -38,7 +40,7 @@ def make_handler():
 
 def set_params(handler, params):
     """Подменяет выбор параметров FFmpeg на тестовую команду."""
-    handler._get_ffmpeg_params = lambda codec, is_local_file=False: params
+    handler._get_ffmpeg_params = lambda codec, **kwargs: params
 
 
 def get_process(handler):
@@ -62,7 +64,7 @@ async def test_start_launches_process_and_stop_terminates():
     handler, _ = make_handler()
     set_params(handler, ["sleep", "30"])
 
-    await handler.start_ffmpeg_stream("http://example/track")
+    await handler.start_ffmpeg_stream("http://example/track", Codec.MP3)
     proc = get_process(handler)
     assert proc is not None
     assert proc.returncode is None
@@ -76,9 +78,9 @@ async def test_new_start_replaces_old_process():
     handler, _ = make_handler()
     set_params(handler, ["sleep", "30"])
 
-    await handler.start_ffmpeg_stream("http://example/one")
+    await handler.start_ffmpeg_stream("http://example/one", Codec.MP3)
     first = get_process(handler)
-    await handler.start_ffmpeg_stream("http://example/two")
+    await handler.start_ffmpeg_stream("http://example/two", Codec.MP3)
     second = get_process(handler)
 
     assert second is not first
@@ -91,7 +93,7 @@ async def test_track_error_exit_restarts_and_reattaches_ruark(fast_sleep):
     handler, ruark = make_handler()
     set_params(handler, ["sh", "-c", "exit 1"])
 
-    await handler.start_ffmpeg_stream("http://example/track")
+    await handler.start_ffmpeg_stream("http://example/track", Codec.MP3)
 
     # После аварийного выхода поток перезапускается и Ruark
     # заново получает URL стрима и команду play
@@ -104,7 +106,7 @@ async def test_track_natural_end_does_not_restart():
     handler, ruark = make_handler()
     set_params(handler, ["true"])
 
-    await handler.start_ffmpeg_stream("http://example/track")
+    await handler.start_ffmpeg_stream("http://example/track", Codec.MP3)
     await wait_for_condition(lambda: False, timeout=0.2)
 
     ruark.set_av_transport_uri.assert_not_called()
@@ -116,7 +118,9 @@ async def test_radio_zero_exit_triggers_restart(fast_sleep):
     handler, ruark = make_handler()
     set_params(handler, ["true"])
 
-    await handler.start_ffmpeg_stream("http://example/master.m3u8", radio=True)
+    await handler.start_ffmpeg_stream(
+        "http://example/master.m3u8", Codec.AAC, radio=True
+    )
 
     # Радио перезапускается даже при нормальном коде выхода
     assert await wait_for_condition(lambda: ruark.play.called)
@@ -136,7 +140,7 @@ async def test_play_stream_points_ruark_at_local_stream():
     handler, ruark = make_handler()
     set_params(handler, ["sleep", "30"])
 
-    await handler.play_stream("http://example/track")
+    await handler.play_stream("http://example/track", Codec.MP3)
 
     call = ruark.set_av_transport_uri.call_args
     stream_url = call.args[0] if call.args else call.kwargs["uri"]
@@ -164,7 +168,7 @@ async def test_play_stream_passes_metadata_to_ruark():
     set_params(handler, ["sleep", "30"])
 
     await handler.play_stream(
-        "http://example/track", title="Песня", artist="Артист"
+        "http://example/track", Codec.MP3, title="Песня", artist="Артист"
     )
 
     call = ruark.set_av_transport_uri.call_args
@@ -181,7 +185,7 @@ async def read_chunk(agen, timeout=3.0):
 async def test_new_client_displaces_previous_stream():
     handler, _ = make_handler()
     set_params(handler, ["sh", "-c", "while :; do printf A; sleep 0.05; done"])
-    await handler.start_ffmpeg_stream("http://example/one")
+    await handler.start_ffmpeg_stream("http://example/one", Codec.MP3)
 
     first = (await handler.stream_audio()).body_iterator
     assert await read_chunk(first)
@@ -201,7 +205,7 @@ async def test_new_client_displaces_previous_stream():
 def test_slow_flac_pacing_logged_as_warning(caplog):
     """FLAC на ~320 кбит/с — втрое ниже реального времени, WARNING."""
     handler, _ = make_handler()
-    handler._stream_codec = "flac"
+    handler._stream_codec = Codec.FLAC
 
     with caplog.at_level(logging.WARNING):
         handler._log_stream_pacing(
@@ -219,7 +223,7 @@ def test_slow_flac_pacing_logged_as_warning(caplog):
 def test_healthy_mp3_pacing_stays_quiet(caplog):
     """Тот же темп ~320 кбит/с для MP3 — норма, без WARNING."""
     handler, _ = make_handler()
-    handler._stream_codec = "mp3"
+    handler._stream_codec = Codec.MP3
 
     with caplog.at_level(logging.WARNING):
         handler._log_stream_pacing(
@@ -242,7 +246,7 @@ async def test_radio_declared_as_mpeg_in_didl(fast_sleep):
     set_params(handler, ["sleep", "30"])
 
     await handler.play_stream(
-        "http://example/master.m3u8", radio=True, title="ROCK FM"
+        "http://example/master.m3u8", Codec.AAC, radio=True, title="ROCK FM"
     )
 
     assert handler.stream_media_type == "audio/aac"
@@ -264,7 +268,9 @@ async def test_radio_copied_to_adts_without_reencode(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     handler, _ = make_handler()
 
-    await handler.start_ffmpeg_stream("http://example/master.m3u8", radio=True)
+    await handler.start_ffmpeg_stream(
+        "http://example/master.m3u8", Codec.AAC, radio=True
+    )
 
     command = launched[-1]
     assert command[command.index("-c:a") + 1] == "copy"
@@ -278,7 +284,7 @@ async def test_flac_codec_selects_flac_params_and_mime():
     set_params(handler, ["sleep", "30"])
 
     await handler.play_stream(
-        "http://example/track.flac", codec="flac", title="Т", artist="А"
+        "http://example/track.flac", Codec.FLAC, title="Т", artist="А"
     )
 
     assert handler.stream_media_type == "audio/flac"
@@ -342,11 +348,11 @@ async def test_old_client_closes_without_touching_new_process():
     """Клиент снятого процесса завершается сам и не глушит новый поток."""
     handler, _ = make_handler()
     set_params(handler, ["sh", "-c", "while :; do printf A; sleep 0.05; done"])
-    await handler.start_ffmpeg_stream("http://example/one")
+    await handler.start_ffmpeg_stream("http://example/one", Codec.MP3)
     first = (await handler.stream_audio()).body_iterator
     assert await read_chunk(first)
 
-    await handler.start_ffmpeg_stream("http://example/two")
+    await handler.start_ffmpeg_stream("http://example/two", Codec.MP3)
     new_process = get_process(handler)
 
     with pytest.raises(StopAsyncIteration):
@@ -401,8 +407,29 @@ async def test_play_stream_stops_ffmpeg_when_ruark_unreachable(fast_sleep):
     ruark.reconnect.return_value = False
 
     with pytest.raises(RuarkDeviceNotFoundError):
-        await handler.play_stream("http://example/track")
+        await handler.play_stream("http://example/track", Codec.MP3)
 
+    assert get_process(handler) is None
+
+
+async def test_aac_track_rejected_instead_of_mp3_container(monkeypatch):
+    """AAC-трек без своего набора FFmpeg — понятная ошибка, а не MP3."""
+    launched = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*command, **kwargs):
+        launched.append(list(command))
+        return await real_exec("sleep", "30", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    handler, _ = make_handler()
+
+    with pytest.raises(UnsupportedCodecError):
+        await handler.start_ffmpeg_stream(
+            "http://example/track.m4a", codec=Codec.AAC
+        )
+
+    assert not launched
     assert get_process(handler) is None
 
 
@@ -410,7 +437,7 @@ def test_ffmpeg_params_for_flac_remux_without_reencode():
     from dlna_stream_server.handlers.constants import FFMPEG_FLAC_PARAMS
 
     handler, _ = make_handler()
-    params = handler._get_ffmpeg_params(codec="flac")
+    params = handler._get_ffmpeg_params(codec=Codec.FLAC)
 
     assert params is FFMPEG_FLAC_PARAMS
     assert "copy" in params

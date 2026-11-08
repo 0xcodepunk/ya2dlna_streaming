@@ -10,6 +10,7 @@ from injector import inject
 
 from core.backoff import ExponentialBackoff
 from core.config.settings import settings
+from core.enums import Codec
 from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.constants import RUARK_RESTING_MODE
 from ruark_audio_system.exceptions import (
@@ -56,11 +57,8 @@ STREAM_BROKEN_PHRASE = (
 
 
 def _radio_source(url: str) -> TrackSource:
-    """Источник радио для отправки на DLNA-сервер.
-
-    Кодек радио выбирает DLNA-сервер, это значение он не читает.
-    """
-    return TrackSource(url=url, codec="mp3")
+    """Источник радио для отправки на DLNA-сервер: HLS-поток в AAC."""
+    return TrackSource(url=url, codec=Codec.AAC)
 
 
 class _VoiceVolumeCheck(Enum):
