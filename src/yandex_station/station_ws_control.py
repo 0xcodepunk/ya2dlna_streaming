@@ -10,6 +10,7 @@ from typing import Any
 
 import aiohttp
 from injector import inject
+from pydantic import JsonValue
 
 from core.authorization.yandex_tokens import get_device_token
 from core.backoff import ExponentialBackoff
@@ -481,11 +482,11 @@ class YandexStationClient:
         await self.command_queue.put("stop")
         logger.info("🛑 stream_station_messages завершен")
 
-    def _queue_station_message(self, data: dict[str, Any]) -> None:
+    def _queue_station_message(self, data: JsonValue) -> None:
         """Разбирает сообщение станции и кладёт его в очередь состояния.
 
         Args:
-            data (dict[str, Any]): Сообщение станции из JSON.
+            data (JsonValue): Сообщение станции из JSON.
         """
         message, fallbacks = StationMessage.from_station(data)
         # Сообщения идут несколько раз в секунду: о каждом поле

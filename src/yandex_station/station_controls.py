@@ -115,50 +115,26 @@ class YandexStationControls:
 
     async def get_alice_state(self) -> AliceState | None:
         """Получение состояния Алисы (IDLE, LISTENING, SPEAKING...)."""
-        try:
-            state = await self.get_current_state()
-            return state.alice_state if state is not None else None
-        except Exception as e:
-            logger.error(f"❌ Ошибка при получении состояния Алиса: {e}")
-            return None
+        state = await self.get_current_state()
+        return state.alice_state if state is not None else None
 
     async def get_current_track(self) -> Track | None:
-        """Получение текущего трека.
-
-        Сообщение без плеера даёт трек по умолчанию с id "0": цикл
-        работает дальше. None — сообщений от станции ещё нет.
-        """
-        try:
-            state = await self.get_current_state()
-            if state is None:
-                return None
-            player = state.player_state
-            return Track(
-                id=player.id,
-                title=player.title,
-                type=player.type,
-                artist=player.subtitle,
-                duration=player.duration,
-                progress=player.progress,
-                playing=state.playing,
-                next_id=player.entity_info.next.track_id,
-                prev_id=player.entity_info.prev.track_id,
-            )
-        except Exception as e:
-            logger.error(f"❌ Ошибка при получении текущего трека: {e}")
-            return None
+        """Получение текущего трека, None — сообщений станции ещё нет."""
+        state = await self.get_current_state()
+        # Сообщение без плеера даёт трек по умолчанию с id "0", и цикл
+        # работает дальше, а не пропускает виток
+        return state.to_track() if state is not None else None
 
     async def get_volume(self) -> float | None:
         """Получение текущего уровня громкости (0.0–1.0)."""
         try:
             state = await self.get_current_state()
-            volume = state.volume if state is not None else None
-            if volume is None:
+            level = state.volume if state is not None else None
+            if level is None:
                 return None
             logger.debug(
-                f"🔊 Получение текущего уровня громкости Алиcы: {volume}"
+                f"🔊 Получение текущего уровня громкости Алиcы: {level}"
             )
-            level = float(volume)
             if level > 0:
                 self._level_unconfirmed = False
                 if self._mute_assumed:

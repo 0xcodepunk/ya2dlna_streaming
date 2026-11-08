@@ -1,10 +1,11 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     ValidationError,
     ValidationInfo,
     ValidatorFunctionWrapHandler,
@@ -45,7 +46,6 @@ class _StationModel(BaseModel):
 
     model_config = ConfigDict(
         alias_generator=to_camel,
-        populate_by_name=True,
         coerce_numbers_to_str=True,
     )
 
@@ -67,13 +67,11 @@ class _StationModel(BaseModel):
         handler: ValidatorFunctionWrapHandler,
         info: ValidationInfo,
     ) -> Any:
-        """Поле непонятного вида получает значение по умолчанию.
-
-        Одно плохое поле не бракует всё сообщение: иначе при сбое в
-        каждом сообщении цикл застыл бы на последнем годном.
-        """
+        """Поле непонятного вида получает значение по умолчанию."""
         try:
             return handler(value)
+        # Одно плохое поле не бракует всё сообщение: иначе при сбое в
+        # каждом сообщении цикл застыл бы на последнем годном
         except ValidationError as e:
             name = info.field_name
             if name is None:
@@ -85,7 +83,7 @@ class _StationModel(BaseModel):
             )
 
 
-class NeighborTrack(_StationModel):
+class QueueNeighbor(_StationModel):
     """Соседний элемент очереди станции из entityInfo."""
 
     id: str = ""
@@ -100,8 +98,8 @@ class NeighborTrack(_StationModel):
 class EntityInfo(_StationModel):
     """Очередь станции вокруг текущего трека — для предзагрузки."""
 
-    next: NeighborTrack = Field(default_factory=NeighborTrack)
-    prev: NeighborTrack = Field(default_factory=NeighborTrack)
+    next: QueueNeighbor = Field(default_factory=QueueNeighbor)
+    prev: QueueNeighbor = Field(default_factory=QueueNeighbor)
 
 
 class PlayerState(_StationModel):
@@ -124,6 +122,21 @@ class StationState(_StationModel):
     playing: bool = False
     player_state: PlayerState = Field(default_factory=PlayerState)
 
+    def to_track(self) -> Track:
+        """Собирает текущий трек из состояния плеера."""
+        player = self.player_state
+        return Track(
+            id=player.id,
+            title=player.title,
+            type=player.type,
+            artist=player.subtitle,
+            duration=player.duration,
+            progress=player.progress,
+            playing=self.playing,
+            next_id=player.entity_info.next.track_id,
+            prev_id=player.entity_info.prev.track_id,
+        )
+
 
 class StationExtra(_StationModel):
     """Служебная часть сообщения: состояние приложения в protobuf."""
@@ -139,12 +152,12 @@ class StationMessage(_StationModel):
 
     @classmethod
     def from_station(
-        cls, data: dict[str, Any]
-    ) -> tuple["StationMessage", dict[str, str]]:
+        cls, data: JsonValue
+    ) -> tuple["StationMessage", Mapping[str, str]]:
         """Разбирает сообщение станции из JSON.
 
         Args:
-            data (dict[str, Any]): Сообщение станции из WebSocket.
+            data (JsonValue): Сообщение станции из WebSocket.
         Returns:
             tuple: Сообщение и поля, взятые по умолчанию, с ошибками.
         Raises:
