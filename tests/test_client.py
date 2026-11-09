@@ -80,33 +80,18 @@ def stub_session_tasks(client):
     client.clean_expired_futures = AsyncMock()
 
 
-def station_drops_sessions(client, playing):
-    """Каждый сеанс авторизуется и обрывается; станция до обрыва — playing.
-
-    До авторизации приходит сообщение станции, которая не играет.
-    """
+def station_drops_sessions(client):
+    """Каждый сеанс авторизуется, застаёт станцию играющей и обрывается."""
     stub_session_tasks(client)
 
-    async def authorize():
-        # Так отвечает свежая станция после перезагрузки
-        client.queue.append({"state": {"playing": False}})
-        return True
-
     async def receive_then_drop():
-        client.queue.append({"state": {"playing": playing}})
+        client.queue.append({"state": {"playing": True}})
         client.reconnect_required = True
         client.running = False
 
-    client.authenticate = AsyncMock(side_effect=authorize)
+    client.authenticate = AsyncMock(return_value=True)
     client.stream_station_messages = AsyncMock(side_effect=receive_then_drop)
     client.send_command = AsyncMock(return_value={})
-
-
-def sent_commands(client):
-    """Возвращает команды, отправленные станции, по порядку."""
-    return [
-        call.args[0]["command"] for call in client.send_command.await_args_list
-    ]
 
 
 async def send_through_producer(client, command):
@@ -282,10 +267,10 @@ async def test_failed_authorization_pauses_before_new_token(
 
 
 @pytest.mark.asyncio
-async def test_playback_restored_after_failed_reconnect_attempt(
+async def test_reconnect_sends_no_commands_to_station(
     found_client, monkeypatch
 ):
-    """Станция играла, первая попытка неудачна — после авторизации play."""
+    """Станция играла, связь оборвалась — после переподключения команд нет."""
     websocket = MagicMock(closed=False, close=AsyncMock())
     refused = aiohttp.ClientConnectionError("refused")
     # Четвёртая попытка подключения обрывает цикл
@@ -301,64 +286,15 @@ async def test_playback_restored_after_failed_reconnect_attempt(
             ]
         ),
     )
-    station_drops_sessions(found_client, playing=True)
+    station_drops_sessions(found_client)
     record_sleeps(monkeypatch)
 
     with pytest.raises(asyncio.CancelledError):
         await found_client.connect()
 
-    assert sent_commands(found_client) == ["stop", "play"]
-
-
-@pytest.mark.asyncio
-async def test_playback_not_restored_when_station_was_paused(
-    found_client, monkeypatch
-):
-    """Станция стояла на паузе — после переподключения команд нет."""
-    websocket = MagicMock(closed=False, close=AsyncMock())
-    # Третья попытка подключения обрывает цикл
-    monkeypatch.setattr(
-        aiohttp.ClientSession,
-        "ws_connect",
-        AsyncMock(side_effect=[websocket, websocket, asyncio.CancelledError]),
-    )
-    station_drops_sessions(found_client, playing=False)
-    record_sleeps(monkeypatch)
-
-    with pytest.raises(asyncio.CancelledError):
-        await found_client.connect()
-
-    assert sent_commands(found_client) == []
-
-
-@pytest.mark.asyncio
-async def test_close_forgets_playback_to_restore(found_client, monkeypatch):
-    """Новый запуск после close() не восстанавливает игру прошлого."""
-    websocket = MagicMock(closed=False, close=AsyncMock())
-    # Каждый запуск: сеанс обрывается, попытка переподключения
-    # прерывается остановкой клиента
-    monkeypatch.setattr(
-        aiohttp.ClientSession,
-        "ws_connect",
-        AsyncMock(
-            side_effect=[
-                websocket,
-                asyncio.CancelledError,
-                websocket,
-                asyncio.CancelledError,
-            ]
-        ),
-    )
-    station_drops_sessions(found_client, playing=True)
-    record_sleeps(monkeypatch)
-
-    with pytest.raises(asyncio.CancelledError):
-        await found_client.connect()
-    await found_client.close()
-    with pytest.raises(asyncio.CancelledError):
-        await found_client.connect()
-
-    assert sent_commands(found_client) == []
+    # Переподключение состоялось, а станция команд не получила
+    assert found_client.authenticate.await_count == 2
+    found_client.send_command.assert_not_awaited()
 
 
 @pytest.mark.asyncio

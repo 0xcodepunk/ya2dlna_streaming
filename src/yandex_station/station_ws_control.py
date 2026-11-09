@@ -55,8 +55,6 @@ class YandexStationClient:
         self.authenticated = False
         self.running = True
         self.reconnect_required = False
-        # Станция играла до обрыва: после переподключения вернуть игру
-        self._resume_playback = False
         # Сигнал о новом сообщении станции для событийного цикла
         self.state_updated = asyncio.Event()
         self._connect_task: asyncio.Task[None] | None = None
@@ -239,25 +237,6 @@ class YandexStationClient:
                             )
                         backoff.reset()
 
-                        # Отправляем команды восстановления только после
-                        # успешной авторизации
-                        if self._resume_playback:
-                            logger.info(
-                                "🔄 Восстанавливаем воспроизведение после "
-                                "переподключения"
-                            )
-                            try:
-                                await self.send_command({"command": "stop"})
-                                await asyncio.sleep(1)
-                                await self.send_command({"command": "play"})
-                                logger.info("✅ Воспроизведение восстановлено")
-                            except Exception as e:
-                                logger.error(
-                                    f"❌ Ошибка при восстановлении "
-                                    f"воспроизведения: {e}"
-                                )
-                            self._resume_playback = False
-
                         results = await asyncio.gather(
                             *self.tasks, return_exceptions=True
                         )
@@ -267,13 +246,6 @@ class YandexStationClient:
                                     f"Задача {i} завершилась "
                                     f"с ошибкой: {result}"
                                 )
-
-                        # Сеанс оборвался, а сообщений нового ещё нет:
-                        # последнее в очереди — от оборванного сеанса
-                        self._resume_playback = (
-                            self.reconnect_required
-                            and self._station_was_playing()
-                        )
 
                 except StationAuthError as e:
                     logger.warning(f"❌ {e}")
@@ -569,11 +541,6 @@ class YandexStationClient:
         latest = self.queue[-1] if self.queue else None
         return latest
 
-    def _station_was_playing(self) -> bool:
-        """Сообщает, играла ли станция по последнему сообщению очереди."""
-        latest = self.queue[-1] if self.queue else {}
-        return bool(latest.get("state", {}).get("playing", False))
-
     async def wait_for_state_update(self, timeout: float) -> bool:
         """Ждёт нового сообщения станции, но не дольше timeout секунд.
 
@@ -675,7 +642,6 @@ class YandexStationClient:
         # Иначе новый сеанс в этом процессе прочитает состояние прошлого
         self.queue.clear()
         self.state_updated.clear()
-        self._resume_playback = False
 
     def _log_software_version(self, software_version: str) -> None:
         """Логирует версию ПО станции в файл, если она изменилась."""
