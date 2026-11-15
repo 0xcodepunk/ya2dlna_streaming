@@ -30,6 +30,7 @@ from .constants import (
     RUARK_RECONNECT_COOLDOWN,
     RUARK_RETRY_DELAY,
     STREAM_MIME_TYPES,
+    STREAM_RATE_THRESHOLD_SHARE,
     STREAM_RATE_THRESHOLDS_KBPS,
     STREAM_RATE_WINDOW,
 )
@@ -227,7 +228,12 @@ class StreamHandler:
             f"{source_wait / elapsed * 100:.0f}%, "
             f"ожидание клиента {client_wait / elapsed * 100:.0f}%"
         )
-        threshold = STREAM_RATE_THRESHOLDS_KBPS.get(self._stream_codec, 0)
+        source_kbps = self._ffmpeg.source_bitrate_kbps
+        threshold = (
+            source_kbps * STREAM_RATE_THRESHOLD_SHARE
+            if source_kbps is not None
+            else STREAM_RATE_THRESHOLDS_KBPS.get(self._stream_codec, 0)
+        )
         if kbps < threshold:
             logger.warning(f"⚠️ Подача ниже реального времени! {message}")
         else:
@@ -333,12 +339,15 @@ class StreamHandler:
                     window_bytes += len(chunk)
 
                     if now - window_started >= STREAM_RATE_WINDOW:
-                        self._log_stream_pacing(
-                            window_bytes,
-                            now - window_started,
-                            window_source_wait,
-                            window_client_wait,
-                        )
+                        # Битрейт и кодек уже от нового трека: хвост
+                        # сменённого процесса сравнивать не с чем
+                        if self._ffmpeg.process is proc:
+                            self._log_stream_pacing(
+                                window_bytes,
+                                now - window_started,
+                                window_source_wait,
+                                window_client_wait,
+                            )
                         window_started = now
                         window_bytes = 0
                         window_source_wait = 0.0

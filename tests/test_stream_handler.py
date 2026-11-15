@@ -60,6 +60,32 @@ async def wait_for_condition(condition, timeout=2.0):
     return condition()
 
 
+# Строки заголовка входа FFmpeg 7.1: MP3-192 и живое HLS-радио
+INPUT_192_LINE = "  Duration: 00:03:00.04, start: 0.025057, bitrate: 192 kb/s"
+INPUT_NA_LINE = "  Duration: N/A, start: 1.0, bitrate: N/A"
+
+
+def stderr_script(line):
+    """Команда, которая пишет строку в stderr и ждёт, как живой FFmpeg."""
+    # exec: иначе осиротевший sleep держит stderr и стоп ждёт таймаута
+    return ["sh", "-c", f"echo '{line}' >&2; exec sleep 30"]
+
+
+def pacing_warned(handler, kbps, caplog):
+    """Сообщает, дало ли окно замера с темпом kbps предупреждение."""
+    with caplog.at_level(logging.WARNING):
+        handler._log_stream_pacing(
+            # Окно 30 с: kbps * 30 * 1000 / 8 байт
+            window_bytes=int(kbps * 3750),
+            elapsed=30.0,
+            source_wait=0.0,
+            client_wait=0.0,
+        )
+    return any(
+        "ниже реального времени" in record.message for record in caplog.records
+    )
+
+
 async def test_start_launches_process_and_stop_terminates():
     handler, _ = make_handler()
     set_params(handler, ["sleep", "30"])
@@ -202,6 +228,42 @@ async def test_new_client_displaces_previous_stream():
     await handler.stop_ffmpeg()
 
 
+async def test_replaced_process_window_not_judged(monkeypatch, caplog):
+    """Хвост сменённого трека не сравнивается с порогом нового потока."""
+    monkeypatch.setattr(stream_handler_module, "STREAM_RATE_WINDOW", 0.0)
+    monkeypatch.setattr(ffmpeg_supervisor, "FFMPEG_TERM_TIMEOUT", 0.5)
+    handler, _ = make_handler()
+    # Старый процесс глух к SIGTERM: его хвост ещё читается после смены
+    set_params(
+        handler,
+        [
+            "sh",
+            "-c",
+            f"echo '{INPUT_192_LINE}' >&2; trap '' TERM; "
+            "while :; do printf A; sleep 0.05; done",
+        ],
+    )
+    await handler.start_ffmpeg_stream("http://example/one", Codec.MP3)
+    old_client = (await handler.stream_audio()).body_iterator
+    assert await read_chunk(old_client)
+
+    set_params(handler, ["sleep", "30"])
+    await handler.start_ffmpeg_stream("http://example/two", Codec.MP3)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert await read_chunk(old_client)
+
+    # Битрейт уже сброшен новым стартом: окно старого трека сравнилось
+    # бы с запасным порогом и дало ложное предупреждение
+    assert not [
+        record
+        for record in caplog.records
+        if "ниже реального времени" in record.message
+    ]
+    await old_client.aclose()
+    await handler.stop_ffmpeg()
+
+
 def test_slow_flac_pacing_logged_as_warning(caplog):
     """FLAC на ~320 кбит/с — втрое ниже реального времени, WARNING."""
     handler, _ = make_handler()
@@ -234,6 +296,39 @@ def test_healthy_mp3_pacing_stays_quiet(caplog):
         )
 
     assert not caplog.records
+
+
+@pytest.mark.parametrize(
+    ("kbps", "warned"), [(192, False), (155, False), (150, True), (100, True)]
+)
+async def test_pacing_threshold_follows_source_bitrate(kbps, warned, caplog):
+    """Порог 192-кбит потока — 80 % битрейта (~154 кбит/с), а не 250."""
+    handler, _ = make_handler()
+    set_params(handler, stderr_script(INPUT_192_LINE))
+    await handler.start_ffmpeg_stream("http://example/track", Codec.MP3)
+    assert await wait_for_condition(
+        lambda: handler._ffmpeg.source_bitrate_kbps == 192
+    )
+
+    assert pacing_warned(handler, kbps, caplog) is warned
+    await handler.stop_ffmpeg()
+
+
+@pytest.mark.parametrize(("kbps", "warned"), [(95, False), (80, True)])
+async def test_radio_without_bitrate_keeps_codec_threshold(
+    kbps, warned, caplog
+):
+    """Радио с `bitrate: N/A`: порог — прежняя константа AAC 90 кбит/с."""
+    handler, _ = make_handler()
+    set_params(handler, stderr_script(INPUT_NA_LINE))
+    await handler.start_ffmpeg_stream(
+        "http://example/master.m3u8", Codec.AAC, radio=True
+    )
+    await REAL_SLEEP(0.2)
+
+    assert handler._ffmpeg.source_bitrate_kbps is None
+    assert pacing_warned(handler, kbps, caplog) is warned
+    await handler.stop_ffmpeg()
 
 
 async def test_radio_declared_as_mpeg_in_didl(fast_sleep):
@@ -342,6 +437,43 @@ async def test_terminate_keeps_graceful_stop_for_healthy_process():
     await supervisor.stop()
 
     assert proc.returncode == 0
+
+
+async def test_supervisor_publishes_source_bitrate_from_stderr():
+    """Строка `bitrate: 192 kb/s` заголовка входа — битрейт источника 192."""
+    supervisor = FfmpegSupervisor()
+
+    await supervisor.start(
+        "http://example/track", stderr_script(INPUT_192_LINE)
+    )
+
+    assert await wait_for_condition(
+        lambda: supervisor.source_bitrate_kbps == 192
+    )
+    await supervisor.stop()
+
+
+async def test_new_start_forgets_previous_source_bitrate():
+    """Радио после трека 192: битрейт неизвестен, а не 192 от трека."""
+    supervisor = FfmpegSupervisor()
+    await supervisor.start(
+        "http://example/track", stderr_script(INPUT_192_LINE)
+    )
+    assert await wait_for_condition(
+        lambda: supervisor.source_bitrate_kbps == 192
+    )
+
+    await supervisor.start(
+        "http://example/master.m3u8",
+        stderr_script(INPUT_NA_LINE),
+        radio=True,
+    )
+    await REAL_SLEEP(0.2)
+
+    # Устаревшие 192 дали бы радио на ~112 кбит/с порог трека
+    # и предупреждение на каждом окне замера
+    assert supervisor.source_bitrate_kbps is None
+    await supervisor.stop()
 
 
 async def test_old_client_closes_without_touching_new_process():

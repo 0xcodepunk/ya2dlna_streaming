@@ -1,4 +1,5 @@
 import asyncio
+import re
 from logging import getLogger
 from typing import Awaitable, Callable, Sequence
 
@@ -8,6 +9,11 @@ logger = getLogger(__name__)
 
 # Колбэк вызывается после успешного перезапуска потока с флагом radio
 RestartCallback = Callable[[bool], Awaitable[None]]
+
+# Битрейт источника из заголовка входа: «Duration: …, bitrate: 192 kb/s».
+# Строка прогресса («bitrate= 193.0kbits/s») — измеренный выход, не она;
+# «bitrate: N/A» у HLS-радио и ноль сюда не попадают
+SOURCE_BITRATE_REGEX = re.compile(r"duration:.*bitrate:\s*([1-9]\d*) kb/s")
 
 
 class FfmpegSupervisor:
@@ -35,11 +41,17 @@ class FfmpegSupervisor:
         self._on_restarted = on_restarted
         # Фоновые задачи завершения старых процессов
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
+        self._source_bitrate_kbps: int | None = None
 
     @property
     def process(self) -> asyncio.subprocess.Process | None:
         """Текущий процесс FFmpeg или None."""
         return self._process
+
+    @property
+    def source_bitrate_kbps(self) -> int | None:
+        """Битрейт источника текущего процесса, кбит/с; None — неизвестен."""
+        return self._source_bitrate_kbps
 
     def reset_restart_state(self) -> None:
         """Сбрасывает счётчик попыток перед новым пользовательским стартом."""
@@ -64,6 +76,7 @@ class FfmpegSupervisor:
         # Сбрасываем текущие ссылки сразу, не дожидаясь завершения старого
         self._process = None
         self._monitor_task = None
+        self._source_bitrate_kbps = None
 
         await self._cancel_restart_task()
 
@@ -124,6 +137,7 @@ class FfmpegSupervisor:
             self._current_radio = False
             self._current_params = None
             self._restart_attempts = 0
+            self._source_bitrate_kbps = None
 
             logger.info("⏹ Останавливаем текущий поток FFmpeg...")
             await self._terminate(proc, None)
@@ -339,10 +353,7 @@ class FfmpegSupervisor:
             logger.debug(f"Не удалось закрыть каналы FFmpeg: {e}")
 
     async def _log_stderr(self, proc: asyncio.subprocess.Process) -> None:
-        """Логирование stderr FFmpeg процесса.
-
-        Строки фильтруются по уровням важности.
-        """
+        """Публикует битрейт источника и логирует stderr FFmpeg по важности."""
         stderr = proc.stderr
         if stderr is None:
             return
@@ -356,6 +367,15 @@ class FfmpegSupervisor:
                     continue
 
                 lower_line = line_str.lower()
+
+                bitrate_match = SOURCE_BITRATE_REGEX.search(lower_line)
+                # Гаснущий старый процесс не пишет свой битрейт новому
+                if bitrate_match and proc is self._process:
+                    self._source_bitrate_kbps = int(bitrate_match.group(1))
+                    logger.info(
+                        f"📋 Битрейт источника: "
+                        f"{self._source_bitrate_kbps} кбит/с"
+                    )
 
                 # Диагностика: обязательно логируем все ошибки и завершения
                 error_keywords = [
