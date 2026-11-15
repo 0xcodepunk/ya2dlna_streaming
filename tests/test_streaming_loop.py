@@ -128,7 +128,10 @@ def make_manager(station_controls, ruark, track_url="http://track/url"):
         ruark_controls=ruark,
         yandex_music_api=music_api,
     )
+    # HTTP-граница с DLNA-сервером: настоящий stop() в тестах
+    # не должен слать POST /stop_stream
     manager._send_track_to_stream_server = AsyncMock()
+    manager._stop_stream_on_stream_server = AsyncMock()
     return manager
 
 
@@ -550,7 +553,6 @@ async def test_silent_ruark_stops_streaming_after_resend_limit(
     track = make_track(progress=50.0)
     station = make_station_controls(track)
     manager = make_manager(station, make_ruark(is_playing=False))
-    manager._stop_stream_on_stream_server = AsyncMock()
     send = manager._send_track_to_stream_server
 
     await drive_streaming(
@@ -576,7 +578,6 @@ async def test_silent_ruark_stops_streaming_once(fast_sleep, monkeypatch):
     track = make_track(progress=50.0)
     station = make_station_controls(track)
     manager = make_manager(station, make_ruark(is_playing=False))
-    manager._stop_stream_on_stream_server = AsyncMock()
     stop_calls = 0
     real_stop = manager.stop
 
@@ -645,7 +646,6 @@ async def test_powered_off_ruark_stops_streaming(fast_sleep, monkeypatch):
     ruark = make_ruark(is_playing=False)
     ruark.is_powered_on.return_value = False
     manager = make_manager(station, ruark)
-    manager._stop_stream_on_stream_server = AsyncMock()
     send = manager._send_track_to_stream_server
 
     await drive_streaming(
@@ -668,7 +668,6 @@ async def test_long_pause_stops_streaming_with_sleeping_ruark(
     # Ruark ушёл в штатное автовыключение и не отвечает на команды
     ruark.stop.side_effect = RuarkUnavailableError("Ruark не ответил: Stop")
     manager = make_manager(station, ruark)
-    manager._stop_stream_on_stream_server = AsyncMock()
 
     await drive_streaming(
         manager, until=lambda: manager._shutdown_task is not None
@@ -1053,7 +1052,6 @@ async def test_stop_survives_unreachable_ruark():
     ruark.set_mode.side_effect = RuntimeError("нет связи")
     ruark.turn_power_off.side_effect = RuntimeError("нет связи")
     manager = make_manager(station, ruark)
-    manager._stop_stream_on_stream_server = AsyncMock()
     manager._volume_store = MagicMock()
 
     await manager.stop()
@@ -1069,7 +1067,6 @@ def make_stopping_manager(powered_on=True):
     ruark = make_ruark()
     ruark.is_powered_on.return_value = powered_on
     manager = make_manager(station, ruark)
-    manager._stop_stream_on_stream_server = AsyncMock()
     manager._volume_store = MagicMock()
     return manager, ruark
 
@@ -1786,7 +1783,6 @@ def make_restarted_manager(station_volume_file):
         ws_client=ws_client, protobuf=MagicMock(spec=Protobuf)
     )
     manager = make_voice_manager(station, make_ruark())
-    manager._stop_stream_on_stream_server = AsyncMock()
     return manager, ws_client
 
 
@@ -2006,7 +2002,6 @@ async def test_ruark_outage_clock_restarts_after_stop(monkeypatch):
     clock = freeze_clock(monkeypatch)
     station = make_station_controls(make_track())
     manager = make_manager(station, make_ruark())
-    manager._stop_stream_on_stream_server = AsyncMock()
     manager._volume_store = MagicMock()
 
     await manager._note_ruark_outage(unavailable())
