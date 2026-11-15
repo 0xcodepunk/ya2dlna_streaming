@@ -31,7 +31,7 @@ jobs:
       APP_RUARK_PIN: "1234"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Установка uv
         uses: astral-sh/setup-uv@v7
@@ -67,7 +67,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Подготовка .env
         run: cp "$HOME/.config/ya2dlna/.env" .env
