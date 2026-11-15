@@ -1,0 +1,22 @@
+# Dependabot: еженедельная проверка зависимостей Python (uv) и действий
+# GitHub Actions. Минорные и патч-обновления каждой экосистемы приходят
+# одним PR, мажорные — отдельными: их ломающие изменения смотрим по одному
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-minor:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-minor:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
