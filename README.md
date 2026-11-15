@@ -63,7 +63,7 @@
 
 | Метод | Эндпоинт | Описание |
 |-------|----------|----------|
-| `POST` | `/set_stream` | Запуск потока: `yandex_url`, `codec` (обязателен: `mp3`, `flac`, `aac`), `radio`, `start_position`, `title`, `artist` |
+| `POST` | `/set_stream` | Запуск потока: `yandex_url`, `codec` (обязателен: `mp3` или `flac` у трека, `aac` у радио), `radio`, `start_position`, `title`, `artist` |
 | `GET/HEAD` | `/live_stream.mp3` | Аудиопоток для DLNA-устройства |
 | `POST` | `/stop_stream` | Остановка потока |
 
@@ -83,13 +83,13 @@ cd ya2dlna_streaming
 # Путь к исходному коду
 PYTHONPATH=src
 
-# Режим отладки для логирования
+# Режим отладки для логирования (по умолчанию False)
 APP_DEBUG=False
 
 # API токен для Яндекс.Музыки
 APP_YA_MUSIC_TOKEN=your_token_here
 
-# PIN-код Ruark (по умолчанию 1234)
+# PIN-код Ruark (заводской 1234)
 APP_RUARK_PIN=1234
 
 # Необязательно: известный IP Ruark — быстрый старт без SSDP-скана сети
@@ -100,8 +100,17 @@ APP_LOCAL_SERVER_HOST=192.168.1.10
 APP_LOCAL_SERVER_PORT_DLNA=8080
 APP_LOCAL_SERVER_PORT_API=8001
 
-# Качество потока, kbps (64/128/192/320)
+# Битрейт MP3, kbps: 192 или 320 (по умолчанию 192)
 APP_STREAM_QUALITY=320
+
+# FLAC, когда он есть у трека (по умолчанию True). FLAC идёт 1–1,4 Мбит/с:
+# если на слабом Wi-Fi устройства звук заикается, поставьте False
+APP_PREFER_LOSSLESS=True
+
+# Необязательно, для отладки: трек скачивается целиком и FFmpeg читает
+# локальный файл вместо ссылки (по умолчанию False, на радио не действует).
+# Работает только с MP3: с FLAC FFmpeg не стартует, нужен APP_PREFER_LOSSLESS=False
+# APP_STREAM_IS_LOCAL_FILE=True
 
 # «Алиса, громче» и «тише» во время стрима меняют громкость Ruark (по умолчанию True).
 # «Тише» не опускает Ruark ниже 5 из 100. С False обе команды, как раньше, меняют голос Алисы
@@ -115,6 +124,8 @@ APP_IDLE_SHUTDOWN_MINUTES=60
 # YA2DLNA_DATA_DIR=/opt/ya2dlna-data
 ```
 
+Токен, PIN, адрес и порты обязательны, у остальных настроек есть значения по умолчанию.
+
 Запустите сервисы:
 ```bash
 docker compose up -d
@@ -123,6 +134,17 @@ docker compose up -d
 > Сервисы работают с `network_mode: host` — DLNA-устройство должно быть в той же локальной сети, а `APP_LOCAL_SERVER_HOST` указывать на адрес хоста, доступный устройству.
 
 > `.env` в образ не копируется: compose передаёт настройки в контейнеры через `env_file`, поэтому после правки `.env` достаточно `docker compose up -d`, пересборка не нужна. Docker-логи каждого сервиса ограничены тремя файлами по 10 МБ.
+
+### Выбор источника трека
+
+Ссылку на трек API-сервис запрашивает у Яндекс.Музыки в таком порядке:
+
+| `APP_PREFER_LOSSLESS` | Порядок источников |
+|-----------------------|--------------------|
+| `True` (по умолчанию) | FLAC → MP3 с битрейтом `APP_STREAM_QUALITY` → лучший MP3 |
+| `False` | MP3 с битрейтом `APP_STREAM_QUALITY` → лучший MP3 → FLAC, только если MP3 у трека нет |
+
+Звук уходит на устройство без перекодирования: MP3 и FLAC в своём формате, радио — в AAC, как его отдаёт вещатель.
 
 ## ⚙️ CI/CD
 
@@ -140,10 +162,10 @@ uv sync
 ### Запуск сервисов
 ```bash
 # API сервис
-python -m src.api.main
+PYTHONPATH=src python -m src.api.main
 
 # DLNA сервер
-python -m src.dlna_stream_server.main
+PYTHONPATH=src python -m src.dlna_stream_server.main
 ```
 
 ### Проверки перед коммитом

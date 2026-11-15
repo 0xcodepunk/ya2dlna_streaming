@@ -1,6 +1,6 @@
 [project]
 name = "ya2dlna-streaming"
-version = "1.0.0"
+version = "1.1.0"
 description = "Стриминг музыки с Яндекс Станции на DLNA-устройства (Ruark R5)"
 requires-python = ">=3.11"
 dependencies = [
