@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import requests
-from upnpclient.soap import SOAPError
+from upnpclient.soap import SOAP, SOAPError
 
 from ruark_audio_system.exceptions import RuarkUnavailableError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
@@ -66,3 +66,17 @@ async def test_soap_error_is_not_treated_as_outage():
 
     with pytest.raises(SOAPError):
         await controller.set_volume(20)
+
+
+def test_soap_call_uses_shortened_timeout(monkeypatch):
+    """Подмена SOAP_TIMEOUT доходит до HTTP-запроса upnpclient."""
+    post = MagicMock(side_effect=requests.exceptions.ReadTimeout("timeout"))
+    monkeypatch.setattr("upnpclient.soap.requests.post", post)
+    soap = SOAP(
+        "http://ruark/control", "urn:schemas-upnp-org:service:AVTransport:1"
+    )
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        soap.call("GetTransportInfo")
+
+    assert post.call_args.kwargs["timeout"] == 10
