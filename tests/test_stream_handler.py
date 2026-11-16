@@ -1,10 +1,12 @@
 import asyncio
+import importlib
 import logging
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 
 from core.enums import Codec
 from dlna_stream_server.handlers import ffmpeg_supervisor
@@ -800,4 +802,58 @@ async def test_timeline_ffmpeg_restart_reattaches_with_saved_metadata(
         "   0.0 ruark.play()",
         "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Песня', artist='Артист', mime_type='audio/flac')",
         "   0.0 ruark.play()",
+    ]
+
+
+async def test_timeline_dlna_start_finds_ruark_in_background(monkeypatch):
+    """Сервер стартует, не дожидаясь Ruark; при остановке поиск гасится.
+
+    Ruark мог спать при старте: поиск идёт в фоне, а привязку потока
+    потом восстановит execute_with_lock.
+    """
+    # Импорт модуля сервиса настраивает логи процесса: в тестах не нужно
+    monkeypatch.setattr(
+        "core.logging.setup.setup_logging", lambda *args, **kwargs: None
+    )
+    dlna_main = importlib.import_module("dlna_stream_server.main")
+    handler, ruark, clock = make_timeline_handler(monkeypatch)
+    search_cancelled = asyncio.Event()
+
+    async def endless_search():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            search_cancelled.set()
+            raise
+
+    ruark.connect.side_effect = endless_search
+    objects = {StreamHandler: handler, RuarkR5Controller: ruark}
+    container = MagicMock()
+    container.get.side_effect = objects.__getitem__
+    monkeypatch.setattr(
+        dlna_main,
+        "MainDIContainer",
+        lambda: SimpleNamespace(get_container=lambda: container),
+    )
+    timeline = Timeline(clock)
+    timeline.spy(ruark, {"connect": "ruark.connect"})
+    timeline.spy(handler, {"stop_ffmpeg": "handler.stop_ffmpeg"})
+    timeline.spy(handler._ffmpeg, {"stop": "ffmpeg.stop"})
+    journal = timeline.entries
+    app = FastAPI()
+
+    lifespan = dlna_main.lifespan(app)
+    # Старт, ждущий Ruark, упал бы здесь по таймауту, а не повис
+    await asyncio.wait_for(lifespan.__aenter__(), timeout=1.0)
+    await REAL_SLEEP(0)
+    assert app.state.stream_handler is handler
+    assert journal == ["   0.0 ruark.connect()"]
+
+    await lifespan.__aexit__(None, None, None)
+    await REAL_SLEEP(0)
+    assert search_cancelled.is_set()
+    assert journal == [
+        "   0.0 ruark.connect()",
+        "   0.0 handler.stop_ffmpeg()",
+        "   0.0 ffmpeg.stop()",
     ]
