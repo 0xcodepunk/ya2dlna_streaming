@@ -28,6 +28,7 @@ from yandex_station.constants import (
     STREAMING_FAILURE_STREAK_RESET,
     TRACK_SOURCE_TTL,
 )
+from yandex_station.exceptions import StationNotFoundError
 from yandex_station.models import Track
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
@@ -2091,12 +2092,10 @@ STATION_READS = frozenset(
 
 
 def record_timeline(monkeypatch, manager, clock, iterations=None, tick=0.0):
-    """Общий журнал команд Ruark, действий станции, отправок и пауз.
-
-    Вызывается после настройки моков. Цикл гасится после iterations
-    витков (ожиданий события с STREAM_POLL_INTERVAL); tick — на сколько
-    секунд виток без событий станции двигает часы.
-    """
+    """Журнал команд Ruark, станции, отправок и пауз (после настройки моков)."""
+    # Цикл гасится после iterations витков (ожиданий события
+    # с STREAM_POLL_INTERVAL); tick — на сколько секунд виток без событий
+    # станции двигает часы
     timeline = Timeline(clock)
     timeline.spy(
         manager._ruark_controls,
@@ -2210,7 +2209,9 @@ async def test_timeline_start_with_unreachable_station_stays_silent(
 ):
     clock = freeze_clock(monkeypatch)
     station = make_station_controls(make_track())
-    station.start_ws_client.side_effect = RuntimeError("станция не найдена")
+    station.start_ws_client.side_effect = StationNotFoundError(
+        "станция не найдена"
+    )
     manager = make_manager(station, make_ruark())
     journal = record_timeline(monkeypatch, manager, clock)
 
@@ -2218,7 +2219,7 @@ async def test_timeline_start_with_unreachable_station_stays_silent(
 
     assert journal == [
         "   0.0 ruark.connect()",
-        "   0.0 station.start_ws_client() !RuntimeError",
+        "   0.0 station.start_ws_client() !StationNotFoundError",
         "   0.0 station.stop_ws_client()",
     ]
 
@@ -2680,7 +2681,7 @@ async def test_timeline_power_query_failure_treated_as_on(monkeypatch):
     no_silence_grace(monkeypatch)
     station = make_station_controls(make_track(progress=50.0))
     ruark = make_ruark(is_playing=False)
-    ruark.is_powered_on.side_effect = scripted(True, RuntimeError("fsapi"))
+    ruark.is_powered_on.side_effect = scripted(True, RuarkApiError("fsapi"))
 
     journal = await loop_timeline(monkeypatch, station, ruark, 3)
 
@@ -2693,7 +2694,7 @@ async def test_timeline_power_query_failure_treated_as_on(monkeypatch):
         "   0.0 ruark.is_playing() -> False",
         "   0.0 station.fade_out_alice_volume()",
         "   0.0 ruark.is_playing() -> False",
-        "   0.0 ruark.is_powered_on() !RuntimeError",
+        "   0.0 ruark.is_powered_on() !RuarkApiError",
         "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
         "   0.0 station.fade_out_alice_volume()",
         "   0.0 ruark.is_playing() -> False",
@@ -2786,20 +2787,21 @@ async def test_timeline_stop_returns_sound_to_station(monkeypatch):
 
 async def test_timeline_stop_survives_every_ruark_failure(monkeypatch):
     ruark = make_ruark()
-    for name in ("get_volume", "stop", "set_volume", "set_mode"):
-        getattr(ruark, name).side_effect = RuntimeError("нет связи")
-    ruark.is_powered_on.side_effect = RuntimeError("нет связи")
-    ruark.turn_power_off.side_effect = RuntimeError("нет связи")
+    # UPnP-команды и fsapi падают каждая своей ошибкой
+    for name in ("get_volume", "stop", "set_volume"):
+        getattr(ruark, name).side_effect = RuarkUnavailableError("нет связи")
+    for name in ("set_mode", "is_powered_on", "turn_power_off"):
+        getattr(ruark, name).side_effect = RuarkApiError("нет связи")
 
     journal = await stop_timeline(monkeypatch, ruark)
 
     assert journal == [
-        "   0.0 ruark.get_volume() !RuntimeError",
-        "   0.0 ruark.stop() !RuntimeError",
+        "   0.0 ruark.get_volume() !RuarkUnavailableError",
+        "   0.0 ruark.stop() !RuarkUnavailableError",
         "   0.0 server.stop_stream()",
-        "   0.0 ruark.set_volume(20) !RuntimeError",
-        "   0.0 ruark.is_powered_on() !RuntimeError",
-        "   0.0 ruark.turn_power_off() !RuntimeError",
+        "   0.0 ruark.set_volume(20) !RuarkUnavailableError",
+        "   0.0 ruark.is_powered_on() !RuarkApiError",
+        "   0.0 ruark.turn_power_off() !RuarkApiError",
         "   0.0 station.unmute()",
         "   0.0 station.stop_ws_client()",
     ]

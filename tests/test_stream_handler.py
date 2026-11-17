@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI, HTTPException
+from injector import Injector
+from upnpclient.soap import SOAPError
 
 from core.enums import Codec
 from dlna_stream_server.handlers import ffmpeg_supervisor
@@ -592,17 +594,14 @@ def make_timeline_handler(monkeypatch):
     handler, ruark = make_handler()
     handler._ffmpeg = AsyncMock(spec=FfmpegSupervisor)
     clock = [1000.0]
-    fake_time = MagicMock()
+    fake_time = MagicMock(spec=time)
     fake_time.monotonic.side_effect = lambda: clock[0]
     monkeypatch.setattr(stream_handler_module, "time", fake_time)
     return handler, ruark, clock
 
 
 def record_handler_timeline(monkeypatch, handler, clock):
-    """Журнал команд Ruark, запусков FFmpeg и пауз.
-
-    Вызывается после настройки моков.
-    """
+    """Журнал команд Ruark, запусков FFmpeg и пауз (после настройки моков)."""
     timeline = Timeline(clock)
     timeline.spy(
         handler._ruark_controls,
@@ -765,7 +764,7 @@ async def test_timeline_attach_gives_up_after_three_attempts(monkeypatch):
 
 async def test_timeline_play_failure_retries_only_play(monkeypatch):
     handler, ruark, clock = make_timeline_handler(monkeypatch)
-    ruark.play.side_effect = [RuntimeError("UPnP 501"), None]
+    ruark.play.side_effect = [SOAPError("UPnP 501"), None]
     ruark.reconnect.return_value = True
     journal = record_handler_timeline(monkeypatch, handler, clock)
 
@@ -774,7 +773,7 @@ async def test_timeline_play_failure_retries_only_play(monkeypatch):
     assert journal == [
         "   0.0 ffmpeg.start('http://example/track', radio=False)",
         "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Т', artist='', mime_type='audio/mpeg')",
-        "   0.0 ruark.play() !RuntimeError",
+        "   0.0 ruark.play() !SOAPError",
         "   0.0 ruark.reconnect() -> True",
         "   0.0 sleep(1)",
         "   1.0 ruark.play()",
@@ -828,7 +827,7 @@ async def test_timeline_dlna_start_finds_ruark_in_background(monkeypatch):
 
     ruark.connect.side_effect = endless_search
     objects = {StreamHandler: handler, RuarkR5Controller: ruark}
-    container = MagicMock()
+    container = MagicMock(spec=Injector)
     container.get.side_effect = objects.__getitem__
     monkeypatch.setattr(
         dlna_main,

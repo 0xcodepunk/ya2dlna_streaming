@@ -1,10 +1,7 @@
-"""Журнал вызовов моков с отметками управляемого времени.
+"""Журнал вызовов моков с отметками управляемого времени."""
 
-Общая запись «команда, пауза, команда» для тестов, фиксирующих
-поведение устройств: что получает Ruark, в каком порядке и когда.
-Время — список-часы, как у freeze_clock в test_streaming_loop; его
-двигают только паузы asyncio.sleep.
-"""
+# Время — список-часы, как у freeze_clock в test_streaming_loop; его
+# двигают только паузы asyncio.sleep
 
 import asyncio
 
@@ -35,11 +32,7 @@ def coroutine_methods(cls, skip=frozenset()) -> list[str]:
 
 
 class Timeline:
-    """Журнал «время от начала команда(аргументы) -> ответ».
-
-    Ошибка вызова пишется как «!Класс». Ответы моков по умолчанию
-    (сами моки) в журнал не идут.
-    """
+    """Журнал «время от начала команда(аргументы) -> ответ»."""
 
     def __init__(self, clock: list[float]) -> None:
         self._clock = clock
@@ -52,12 +45,7 @@ class Timeline:
         return len(self.entries) - 1
 
     def spy(self, owner, labels: dict[str, str]) -> None:
-        """Пишет вызовы методов owner, не меняя их поведения.
-
-        Args:
-            owner: Мок или объект с async-методами.
-            labels: Имя метода → подпись в журнале.
-        """
+        """Пишет вызовы методов owner, не меняя их поведения."""
         for name, label in labels.items():
             setattr(
                 owner, name, self._spied(getattr(owner, name), name, label)
@@ -73,8 +61,10 @@ class Timeline:
             try:
                 result = await method(*args, **kwargs)
             except Exception as e:
+                # Шпион пишет любую ошибку как «!Класс» и пробрасывает её
                 self.entries[index] += f" !{type(e).__name__}"
                 raise
+            # Ответы моков по умолчанию (сами моки) в журнал не идут
             if isinstance(result, (bool, int, float, str, TrackSource)):
                 self.entries[index] += f" -> {shown(result)}"
             return result

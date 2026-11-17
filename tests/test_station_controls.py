@@ -559,10 +559,8 @@ async def test_saved_step_above_zero_restored_from_silent_station(
 
 
 async def test_fade_timeline_pause_then_steps(monkeypatch):
-    """Пауза перед гашением и шаг — то, что слышно на станции.
-
-    Тайминги касаются Ruark: колонка за это время должна заиграть.
-    """
+    """Пауза перед гашением и шаг — то, что слышно на станции."""
+    # Тайминги касаются Ruark: колонка за это время должна заиграть
     controls = make_fading_controls(0.5, ("IDLE",))
     clock = [0.0]
     timeline = Timeline(clock)
