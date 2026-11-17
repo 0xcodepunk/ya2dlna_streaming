@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.enums import AliceState, TrackType
+from timeline import Timeline
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
 from yandex_station.station_ws_control import YandexStationClient
@@ -555,3 +556,30 @@ async def test_saved_step_above_zero_restored_from_silent_station(
 
     assert await controls.unmute()
     assert sent_volumes(controls) == [0.1]
+
+
+async def test_fade_timeline_pause_then_steps(monkeypatch):
+    """Пауза перед гашением и шаг — то, что слышно на станции."""
+    # Тайминги касаются Ruark: колонка за это время должна заиграть
+    controls = make_fading_controls(0.5, ("IDLE",))
+    clock = [0.0]
+    timeline = Timeline(clock)
+    timeline.spy(controls, {"set_volume": "station.set_volume"})
+    timeline.patch_sleep(monkeypatch)
+
+    await controls.fade_out_alice_volume()
+
+    assert timeline.entries == [
+        "   0.0 sleep(1)",
+        "   1.0 station.set_volume(0.5)",
+        "   1.0 sleep(0.3)",
+        "   1.3 station.set_volume(0.4)",
+        "   1.3 sleep(0.3)",
+        "   1.6 station.set_volume(0.3)",
+        "   1.6 sleep(0.3)",
+        "   1.9 station.set_volume(0.2)",
+        "   1.9 sleep(0.3)",
+        "   2.2 station.set_volume(0.1)",
+        "   2.2 sleep(0.3)",
+        "   2.5 station.set_volume(0)",
+    ]

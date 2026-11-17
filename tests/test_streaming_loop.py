@@ -16,6 +16,7 @@ from main_stream_service.yandex_music_api import TrackSource, YandexMusicAPI
 from ruark_audio_system.constants import RUARK_RESTING_MODE
 from ruark_audio_system.exceptions import RuarkApiError, RuarkUnavailableError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
+from timeline import Timeline, coroutine_methods
 from yandex_station.constants import (
     ALICE_ACTIVE_STATES,
     RUARK_IDLE_VOLUME,
@@ -27,6 +28,7 @@ from yandex_station.constants import (
     STREAMING_FAILURE_STREAK_RESET,
     TRACK_SOURCE_TTL,
 )
+from yandex_station.exceptions import StationNotFoundError
 from yandex_station.models import Track
 from yandex_station.protobuf_parser import Protobuf
 from yandex_station.station_controls import YandexStationControls
@@ -2064,3 +2066,795 @@ async def test_prepare_retries_hung_ruark_at_constant_interval(monkeypatch):
     await manager._prepare_devices_patiently()
 
     assert delays == [0.25, 0.25, 0.25]
+
+
+# --- Журнал команд Ruark с управляемым временем ---------------------------
+#
+# Тесты ниже фиксируют, какие команды получает Ruark, в каком порядке и
+# в какой момент: «команда, пауза, команда». Время — часы freeze_clock,
+# его двигают только паузы asyncio.sleep; ожидание событий станции
+# (heartbeat) время не двигает, как в make_manager. Журнал снят с текущего
+# кода: при выносе Ruark в плагин он должен остаться прежним.
+
+# Опросы станции в журнал не пишутся: их число зависит от устройства
+# витка, а не от поведения устройств
+STATION_READS = frozenset(
+    {
+        "get_alice_state",
+        "get_current_track",
+        "get_current_state",
+        "get_player_status",
+        "get_radio_url",
+        "get_volume",
+        "is_alice_active",
+    }
+)
+
+
+def record_timeline(monkeypatch, manager, clock, iterations=None, tick=0.0):
+    """Журнал команд Ruark, станции, отправок и пауз (после настройки моков)."""
+    # Цикл гасится после iterations витков (ожиданий события
+    # с STREAM_POLL_INTERVAL); tick — на сколько секунд виток без событий
+    # станции двигает часы
+    timeline = Timeline(clock)
+    timeline.spy(
+        manager._ruark_controls,
+        {
+            name: f"ruark.{name}"
+            for name in coroutine_methods(RuarkR5Controller)
+        },
+    )
+    timeline.spy(
+        manager._station_controls,
+        {
+            name: f"station.{name}"
+            for name in coroutine_methods(
+                YandexStationControls, skip=STATION_READS
+            )
+        },
+    )
+    # HTTP-граница с DLNA-сервером
+    timeline.spy(
+        manager,
+        {
+            "_send_track_to_stream_server": "server.set_stream",
+            "_stop_stream_on_stream_server": "server.stop_stream",
+        },
+    )
+    timeline.patch_sleep(monkeypatch)
+
+    waits = 0
+
+    async def fake_wait(timeout):
+        nonlocal waits
+        if timeout == STREAM_POLL_INTERVAL:
+            waits += 1
+            clock[0] += tick
+            if waits == iterations:
+                manager._stream_state_running = False
+        await REAL_SLEEP(0)
+        return False
+
+    manager._ws_client.wait_for_state_update = AsyncMock(side_effect=fake_wait)
+    return timeline.entries
+
+
+def silent_polls(start: float, count: int) -> list[str]:
+    """Ожидание звука Ruark: count опросов is_playing с паузой 0,1 с."""
+    entries = []
+    for i in range(count):
+        at = start + i * 0.1
+        entries.append(f"{at:6.1f} ruark.is_playing() -> False")
+        entries.append(f"{at:6.1f} sleep(0.1)")
+    return entries
+
+
+async def run_timeline(manager) -> None:
+    """Прогоняет streaming() до остановки и дожидается выключения."""
+    manager._stream_state_running = True
+    await asyncio.wait_for(manager.streaming(), timeout=2.0)
+    if manager._shutdown_task:
+        await manager._shutdown_task
+
+
+# Сценарии журнала: запуск
+
+
+async def test_timeline_start_connects_ruark_with_station(monkeypatch):
+    """Поиск Ruark и подключение к станции идут вместе."""
+    clock = freeze_clock(monkeypatch)
+    station = make_station_controls(make_track())
+    manager = make_manager(station, make_ruark())
+    journal = record_timeline(monkeypatch, manager, clock)
+
+    await manager.start()
+    await manager.stop()
+
+    assert journal == [
+        "   0.0 ruark.connect()",
+        "   0.0 station.start_ws_client()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.stop()",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.set_volume(20)",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.set_mode('AUXIN')",
+        "   0.0 ruark.turn_power_off()",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_start_without_ruark_announces_and_stops(monkeypatch):
+    clock = freeze_clock(monkeypatch)
+    station = make_station_controls(make_track())
+    ruark = make_ruark()
+    ruark.connect.return_value = False
+    ruark.device_name = "Ruark R5"
+    manager = make_manager(station, ruark)
+    journal = record_timeline(monkeypatch, manager, clock)
+
+    await manager.start()
+
+    assert journal == [
+        "   0.0 ruark.connect() -> False",
+        "   0.0 station.start_ws_client()",
+        "   0.0 station.say('Стрим не запустился: не вижу Руарк в сети')",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_start_with_unreachable_station_stays_silent(
+    monkeypatch,
+):
+    clock = freeze_clock(monkeypatch)
+    station = make_station_controls(make_track())
+    station.start_ws_client.side_effect = StationNotFoundError(
+        "станция не найдена"
+    )
+    manager = make_manager(station, make_ruark())
+    journal = record_timeline(monkeypatch, manager, clock)
+
+    await manager.start()
+
+    assert journal == [
+        "   0.0 ruark.connect()",
+        "   0.0 station.start_ws_client() !StationNotFoundError",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+# Сценарии журнала: подготовка устройств
+
+
+async def prepare_timeline(monkeypatch, ruark, saved_volume=None):
+    """Журнал подготовки устройств с громкостью прошлого сеанса в файле."""
+    clock = freeze_clock(monkeypatch)
+    manager = make_manager(make_station_controls(make_track()), ruark)
+    if saved_volume is not None:
+        manager._volume_store.save(saved_volume)
+    journal = record_timeline(monkeypatch, manager, clock)
+    manager._stream_state_running = True
+    await manager._prepare_devices_patiently()
+    return journal
+
+
+async def test_timeline_prepare_powered_off_restores_saved_volume(
+    monkeypatch,
+):
+    ruark = make_ruark(volume=0)
+    ruark.is_powered_on.return_value = False
+
+    journal = await prepare_timeline(monkeypatch, ruark, saved_volume=30)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> False",
+        "   0.0 ruark.turn_power_on()",
+        "   0.0 ruark.set_volume(30)",
+    ]
+
+
+async def test_timeline_prepare_running_takes_device_volume(monkeypatch):
+    journal = await prepare_timeline(
+        monkeypatch, make_ruark(volume=25), saved_volume=30
+    )
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 25",
+    ]
+
+
+async def test_timeline_prepare_silent_ruark_lifted_to_minimum(monkeypatch):
+    journal = await prepare_timeline(monkeypatch, make_ruark(volume=0))
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 0",
+        "   0.0 ruark.get_volume() -> 0",
+        "   0.0 ruark.set_volume(15)",
+    ]
+
+
+async def test_timeline_prepare_ignores_saved_silence(monkeypatch):
+    ruark = make_ruark(volume=0)
+    ruark.is_powered_on.return_value = False
+
+    journal = await prepare_timeline(monkeypatch, ruark, saved_volume=0)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> False",
+        "   0.0 ruark.turn_power_on()",
+        "   0.0 ruark.get_volume() -> 0",
+        "   0.0 ruark.set_volume(15)",
+    ]
+
+
+async def test_timeline_prepare_waits_for_hung_ruark(monkeypatch):
+    ruark = make_ruark(volume=25)
+    ruark.get_volume.side_effect = scripted(unavailable(), unavailable(), 25)
+
+    journal = await prepare_timeline(monkeypatch, ruark)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() !RuarkUnavailableError",
+        "   0.0 sleep(1)",
+        "   1.0 station.set_default_volume()",
+        "   1.0 ruark.get_session_id() -> 'sid'",
+        "   1.0 ruark.is_powered_on() -> True",
+        "   1.0 ruark.get_volume() !RuarkUnavailableError",
+        "   1.0 sleep(1)",
+        "   2.0 station.set_default_volume()",
+        "   2.0 ruark.get_session_id() -> 'sid'",
+        "   2.0 ruark.is_powered_on() -> True",
+        "   2.0 ruark.get_volume() -> 25",
+    ]
+
+
+# Сценарии журнала: цикл стриминга
+
+
+async def loop_timeline(
+    monkeypatch, station, ruark, iterations, tick=0.0
+) -> list[str]:
+    """Журнал iterations витков цикла (подготовка устройств — в начале)."""
+    clock = freeze_clock(monkeypatch)
+    manager = make_manager(station, ruark)
+    journal = record_timeline(monkeypatch, manager, clock, iterations, tick)
+    await run_timeline(manager)
+    return journal
+
+
+def no_silence_grace(monkeypatch):
+    """Страховка от тишины проверяет Ruark на каждом витке."""
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_RESEND_GRACE", 0.0
+    )
+    monkeypatch.setattr(
+        "main_stream_service.main_stream_manager.SILENCE_CHECK_INTERVAL", 0.0
+    )
+
+
+async def test_timeline_new_track_sent_then_station_faded(monkeypatch):
+    station = make_station_controls(make_track(progress=2.0))
+
+    journal = await loop_timeline(monkeypatch, station, make_ruark(), 2)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=0, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_reply_ducks_and_restores_ruark(monkeypatch):
+    station = make_voice_station(
+        alice_states=("IDLE", "IDLE", "SPEAKING", "IDLE"),
+        volume_by_state={"SPEAKING": 0.5, "IDLE": 0.5},
+    )
+
+    journal = await loop_timeline(monkeypatch, station, make_ruark(), 4)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=10, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.set_volume(2)",
+        "   0.0 station.unmute() -> True",
+        "   0.0 ruark.set_volume(20)",
+        "   0.0 ruark.is_playing() -> True",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_voice_volume_up_moves_to_ruark(monkeypatch):
+    station = make_voice_station(
+        alice_states=("IDLE", "IDLE", "SPEAKING", "IDLE"),
+        volume_by_state={"SPEAKING": 0.5, "IDLE": 0.7},
+    )
+
+    journal = await loop_timeline(monkeypatch, station, make_ruark(), 4)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=10, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.set_volume(2)",
+        "   0.0 station.unmute() -> True",
+        "   0.0 station.set_volume(0.5)",
+        "   0.0 ruark.set_volume(34)",
+        "   0.0 ruark.is_playing() -> True",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_silent_after_reply_track_resent(monkeypatch):
+    station = make_voice_station(
+        alice_states=("IDLE", "IDLE", "SPEAKING", "IDLE"),
+        volume_by_state={"SPEAKING": 0.5, "IDLE": 0.5},
+        track=make_track(progress=50.0),
+    )
+
+    journal = await loop_timeline(
+        monkeypatch, station, make_ruark(is_playing=False), 4
+    )
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.set_volume(2)",
+        "   0.0 station.unmute() -> True",
+        "   0.0 ruark.set_volume(20)",
+        *silent_polls(0.0, 30),
+        "   3.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   3.0 station.fade_out_alice_volume()",
+        "   3.0 station.fade_out_alice_volume()",
+        "   3.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_silent_after_reply_radio_resent(monkeypatch):
+    station = make_voice_station(
+        alice_states=("IDLE", "IDLE", "SPEAKING", "IDLE"),
+        volume_by_state={"SPEAKING": 0.5, "IDLE": 0.5},
+        track=make_track(type=TrackType.FM_RADIO, duration=0.0, progress=0.0),
+    )
+
+    journal = await loop_timeline(
+        monkeypatch, station, make_ruark(is_playing=False), 4
+    )
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://radio/master.m3u8, radio=True, start_position=0, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.set_volume(2)",
+        "   0.0 station.unmute() -> True",
+        "   0.0 ruark.set_volume(20)",
+        *silent_polls(0.0, 80),
+        "   8.0 server.set_stream(http://radio/master.m3u8, radio=True, start_position=0, title='title', artist='artist')",
+        "   8.0 station.fade_out_alice_volume()",
+        "   8.0 station.fade_out_alice_volume()",
+        "   8.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_ruark_hangs_after_reply(monkeypatch):
+    """Ожидание после речи без общего предела: фиксируется как есть."""
+    station = make_voice_station(
+        alice_states=("IDLE", "IDLE", "SPEAKING", "IDLE"),
+        volume_by_state={"SPEAKING": 0.5, "IDLE": 0.5},
+    )
+    ruark = make_ruark()
+    # Ruark молчит после возврата громкости, затем перестаёт отвечать
+    ruark.is_playing.side_effect = scripted(False, unavailable(), True)
+
+    journal = await loop_timeline(monkeypatch, station, ruark, 5)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=10, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.set_volume(2)",
+        "   0.0 station.unmute() -> True",
+        "   0.0 ruark.set_volume(20)",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 sleep(0.1)",
+        "   0.1 ruark.is_playing() !RuarkUnavailableError",
+        "   0.1 ruark.is_playing() -> True",
+        "   0.1 station.fade_out_alice_volume()",
+        "   0.1 station.fade_out_alice_volume()",
+        "   0.1 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_pause_stops_ruark_every_iteration(monkeypatch):
+    station = make_station_controls(make_track(playing=False))
+
+    journal = await loop_timeline(monkeypatch, station, make_ruark(), 3)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.stop()",
+        "   0.0 ruark.stop()",
+    ]
+
+
+async def test_timeline_stuck_track_restarted_on_station(monkeypatch):
+    tracks = [make_track(playing=False, progress=10.0 + i) for i in range(8)]
+    station = make_station_controls(tracks=tracks)
+
+    journal = await loop_timeline(monkeypatch, station, make_ruark(), 4)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 station.stop()",
+        "   0.0 sleep(0.3)",
+        "   0.3 station.play()",
+        "   0.3 sleep(0.7)",
+    ]
+
+
+async def test_timeline_seek_repeat_and_resume_only_resend(monkeypatch):
+    """Перемотка, повтор и продолжение не трогают Ruark, только поток."""
+    progress = [10.0, 10.0, 90.0, 90.0, 1.0, 1.0]
+    tracks = [make_track(progress=p) for p in progress]
+    tracks += [make_track(progress=1.0, playing=False)] * 2
+    tracks += [make_track(progress=1.0)] * 2
+    station = make_station_controls(tracks=tracks)
+
+    journal = await loop_timeline(monkeypatch, station, make_ruark(), 6)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=10, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=90, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=1, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.stop()",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=1, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_silence_watchdog_resends_track(monkeypatch):
+    no_silence_grace(monkeypatch)
+    station = make_station_controls(make_track(progress=50.0))
+    ruark = make_ruark()
+    ruark.is_playing.side_effect = scripted(False, False, True)
+
+    journal = await loop_timeline(monkeypatch, station, ruark, 4)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> True",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> True",
+        "   0.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_silence_watchdog_gives_up_after_limit(monkeypatch):
+    no_silence_grace(monkeypatch)
+    station = make_station_controls(make_track(progress=50.0))
+
+    journal = await loop_timeline(
+        monkeypatch, station, make_ruark(is_playing=False), 12
+    )
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 station.unmute()",
+        "   0.0 station.say('Руарк не отвечает, возвращаю звук на станцию')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.stop()",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.set_volume(20)",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.set_mode('AUXIN')",
+        "   0.0 ruark.turn_power_off()",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_powered_off_ruark_stops_quietly(monkeypatch):
+    no_silence_grace(monkeypatch)
+    station = make_station_controls(make_track(progress=50.0))
+    ruark = make_ruark(is_playing=False)
+    ruark.is_powered_on.side_effect = scripted(True, False)
+
+    journal = await loop_timeline(monkeypatch, station, ruark, 4)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 ruark.is_powered_on() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.stop()",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.set_volume(20)",
+        "   0.0 ruark.is_powered_on() -> False",
+        "   0.0 ruark.turn_power_off()",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_power_query_failure_treated_as_on(monkeypatch):
+    no_silence_grace(monkeypatch)
+    station = make_station_controls(make_track(progress=50.0))
+    ruark = make_ruark(is_playing=False)
+    ruark.is_powered_on.side_effect = scripted(True, RuarkApiError("fsapi"))
+
+    journal = await loop_timeline(monkeypatch, station, ruark, 3)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 ruark.is_powered_on() !RuarkApiError",
+        "   0.0 server.set_stream(http://track/url, radio=False, start_position=50, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_silent_radio_resent_after_grace(monkeypatch):
+    no_silence_grace(monkeypatch)
+    tracks = [
+        make_track(type=TrackType.FM_RADIO, duration=0.0, progress=float(i))
+        for i in range(6)
+    ]
+    station = make_station_controls(tracks=tracks)
+    ruark = make_ruark()
+    ruark.is_playing.side_effect = scripted(False, True)
+
+    journal = await loop_timeline(monkeypatch, station, ruark, 3)
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 server.set_stream(http://radio/master.m3u8, radio=True, start_position=0, title='title', artist='artist')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> False",
+        "   0.0 server.set_stream(http://radio/master.m3u8, radio=True, title='title')",
+        "   0.0 station.fade_out_alice_volume()",
+        "   0.0 ruark.is_playing() -> True",
+        "   0.0 station.fade_out_alice_volume()",
+    ]
+
+
+async def test_timeline_long_pause_stops_with_sleeping_ruark(monkeypatch):
+    monkeypatch.setattr(settings, "idle_shutdown_minutes", 0.001)
+    station = make_station_controls(make_track(playing=False))
+    ruark = make_ruark()
+    ruark.stop.side_effect = RuarkUnavailableError("Ruark не ответил: Stop")
+
+    journal = await loop_timeline(
+        monkeypatch, station, ruark, 3, tick=STREAM_POLL_INTERVAL
+    )
+
+    assert journal == [
+        "   0.0 station.set_default_volume()",
+        "   0.0 ruark.get_session_id() -> 'sid'",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.5 ruark.stop() !RuarkUnavailableError",
+        "   1.0 ruark.get_volume() -> 20",
+        "   1.0 ruark.stop() !RuarkUnavailableError",
+        "   1.0 server.stop_stream()",
+        "   1.0 ruark.set_volume(20)",
+        "   1.0 ruark.is_powered_on() -> True",
+        "   1.0 ruark.set_mode('AUXIN')",
+        "   1.0 ruark.turn_power_off()",
+        "   1.0 station.unmute()",
+        "   1.0 station.stop_ws_client()",
+    ]
+
+
+# Сценарии журнала: остановка
+
+
+async def stop_timeline(monkeypatch, ruark, ruark_volume=20):
+    clock = freeze_clock(monkeypatch)
+    manager = make_manager(make_station_controls(make_track()), ruark)
+    manager._ruark_volume = ruark_volume
+    journal = record_timeline(monkeypatch, manager, clock)
+    await manager.stop()
+    return journal
+
+
+async def test_timeline_stop_returns_sound_to_station(monkeypatch):
+    journal = await stop_timeline(monkeypatch, make_ruark(volume=25))
+
+    assert journal == [
+        "   0.0 ruark.get_volume() -> 25",
+        "   0.0 ruark.stop()",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.set_volume(25)",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.set_mode('AUXIN')",
+        "   0.0 ruark.turn_power_off()",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_stop_survives_every_ruark_failure(monkeypatch):
+    ruark = make_ruark()
+    # UPnP-команды и fsapi падают каждая своей ошибкой
+    for name in ("get_volume", "stop", "set_volume"):
+        getattr(ruark, name).side_effect = RuarkUnavailableError("нет связи")
+    for name in ("set_mode", "is_powered_on", "turn_power_off"):
+        getattr(ruark, name).side_effect = RuarkApiError("нет связи")
+
+    journal = await stop_timeline(monkeypatch, ruark)
+
+    assert journal == [
+        "   0.0 ruark.get_volume() !RuarkUnavailableError",
+        "   0.0 ruark.stop() !RuarkUnavailableError",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.set_volume(20) !RuarkUnavailableError",
+        "   0.0 ruark.is_powered_on() !RuarkApiError",
+        "   0.0 ruark.turn_power_off() !RuarkApiError",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_stop_while_ducked_keeps_previous_volume(monkeypatch):
+    journal = await stop_timeline(
+        monkeypatch, make_ruark(volume=RUARK_IDLE_VOLUME), ruark_volume=30
+    )
+
+    assert journal == [
+        "   0.0 ruark.get_volume() -> 2",
+        "   0.0 ruark.stop()",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.set_volume(30)",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.set_mode('AUXIN')",
+        "   0.0 ruark.turn_power_off()",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_stop_while_silent_without_snapshot(monkeypatch):
+    journal = await stop_timeline(
+        monkeypatch, make_ruark(volume=0), ruark_volume=0
+    )
+
+    assert journal == [
+        "   0.0 ruark.get_volume() -> 0",
+        "   0.0 ruark.stop()",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.is_powered_on() -> True",
+        "   0.0 ruark.set_mode('AUXIN')",
+        "   0.0 ruark.turn_power_off()",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]
+
+
+async def test_timeline_stop_powered_off_ruark_not_woken(monkeypatch):
+    ruark = make_ruark()
+    ruark.is_powered_on.return_value = False
+
+    journal = await stop_timeline(monkeypatch, ruark)
+
+    assert journal == [
+        "   0.0 ruark.get_volume() -> 20",
+        "   0.0 ruark.stop()",
+        "   0.0 server.stop_stream()",
+        "   0.0 ruark.set_volume(20)",
+        "   0.0 ruark.is_powered_on() -> False",
+        "   0.0 ruark.turn_power_off()",
+        "   0.0 station.unmute()",
+        "   0.0 station.stop_ws_client()",
+    ]

@@ -1,10 +1,14 @@
 import asyncio
+import importlib
 import logging
 import time
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from injector import Injector
+from upnpclient.soap import SOAPError
 
 from core.enums import Codec
 from dlna_stream_server.handlers import ffmpeg_supervisor
@@ -18,6 +22,7 @@ from dlna_stream_server.handlers.stream_handler import (
 )
 from ruark_audio_system.exceptions import RuarkDeviceNotFoundError
 from ruark_audio_system.ruark_r5_controller import RuarkR5Controller
+from timeline import Timeline, coroutine_methods
 
 # Настоящий sleep сохраняется до подмены в фикстуре fast_sleep
 REAL_SLEEP = asyncio.sleep
@@ -574,3 +579,280 @@ def test_ffmpeg_params_for_flac_remux_without_reencode():
     assert params is FFMPEG_FLAC_PARAMS
     assert "copy" in params
     assert "flac" in params
+
+
+# --- Журнал команд Ruark с управляемым временем ---------------------------
+#
+# Что DLNA-сервер шлёт Ruark при привязке потока, в каком порядке и когда.
+# FFmpeg заменён моком супервизора: его запуск и остановка — тоже записи
+# журнала. Журнал снят с текущего кода: при выносе Ruark в плагин он
+# должен остаться прежним.
+
+
+def make_timeline_handler(monkeypatch):
+    """Обработчик с FFmpeg-моком и часами monotonic для журнала."""
+    handler, ruark = make_handler()
+    handler._ffmpeg = AsyncMock(spec=FfmpegSupervisor)
+    clock = [1000.0]
+    fake_time = MagicMock(spec=time)
+    fake_time.monotonic.side_effect = lambda: clock[0]
+    monkeypatch.setattr(stream_handler_module, "time", fake_time)
+    return handler, ruark, clock
+
+
+def record_handler_timeline(monkeypatch, handler, clock):
+    """Журнал команд Ruark, запусков FFmpeg и пауз (после настройки моков)."""
+    timeline = Timeline(clock)
+    timeline.spy(
+        handler._ruark_controls,
+        {
+            name: f"ruark.{name}"
+            for name in coroutine_methods(RuarkR5Controller)
+        },
+    )
+
+    # Параметры FFmpeg проверяют свои тесты: в журнале только источник
+    async def start(yandex_url, params, radio):
+        timeline.note(f"ffmpeg.start({yandex_url!r}, radio={radio})")
+
+    handler._ffmpeg.start.side_effect = start
+    timeline.spy(handler._ffmpeg, {"stop": "ffmpeg.stop"})
+    timeline.patch_sleep(monkeypatch)
+    return timeline.entries
+
+
+async def test_timeline_track_attached_and_played(monkeypatch):
+    handler, _, clock = make_timeline_handler(monkeypatch)
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    await handler.play_stream(
+        "http://example/track",
+        Codec.MP3,
+        start_position=42.5,
+        title="Песня",
+        artist="Артист",
+    )
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://example/track', radio=False)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Песня', artist='Артист', mime_type='audio/mpeg')",
+        "   0.0 ruark.play()",
+    ]
+
+
+async def test_timeline_radio_attached_as_mpeg(monkeypatch):
+    handler, _, clock = make_timeline_handler(monkeypatch)
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    await handler.play_stream(
+        "http://radio/master.m3u8", Codec.MP3, radio=True, title="Джаз"
+    )
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://radio/master.m3u8', radio=True)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=true', title='Джаз', artist='', mime_type='audio/mpeg')",
+        "   0.0 ruark.play()",
+    ]
+
+
+async def test_timeline_flac_attached_as_flac(monkeypatch):
+    handler, _, clock = make_timeline_handler(monkeypatch)
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    await handler.play_stream(
+        "http://example/track.flac", Codec.FLAC, title="Песня"
+    )
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://example/track.flac', radio=False)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Песня', artist='', mime_type='audio/flac')",
+        "   0.0 ruark.play()",
+    ]
+
+
+async def test_timeline_empty_title_replaced_by_default(monkeypatch):
+    handler, _, clock = make_timeline_handler(monkeypatch)
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    await handler.play_stream("http://example/track", Codec.MP3)
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://example/track', radio=False)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Internet Radio', artist='', mime_type='audio/mpeg')",
+        "   0.0 ruark.play()",
+    ]
+
+
+async def test_timeline_attach_failure_reconnects_and_retries(monkeypatch):
+    handler, ruark, clock = make_timeline_handler(monkeypatch)
+    ruark.set_av_transport_uri.side_effect = [
+        RuarkDeviceNotFoundError("нет устройства"),
+        None,
+    ]
+    ruark.reconnect.return_value = True
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    await handler.play_stream("http://example/track", Codec.MP3, title="Т")
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://example/track', radio=False)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Т', artist='', mime_type='audio/mpeg') !RuarkDeviceNotFoundError",
+        "   0.0 ruark.reconnect() -> True",
+        "   0.0 sleep(1)",
+        "   1.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Т', artist='', mime_type='audio/mpeg')",
+        "   1.0 ruark.play()",
+    ]
+
+
+async def test_timeline_reconnect_has_cooldown(monkeypatch):
+    """Повторный сбой в пределах 30 с не запускает новый поиск Ruark."""
+    handler, ruark, clock = make_timeline_handler(monkeypatch)
+    ruark.play.side_effect = [
+        RuarkDeviceNotFoundError("нет устройства"),
+        None,
+        RuarkDeviceNotFoundError("нет устройства"),
+        None,
+        RuarkDeviceNotFoundError("нет устройства"),
+        None,
+    ]
+    ruark.reconnect.return_value = True
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    await handler.execute_with_lock(ruark.play)
+    clock[0] += 10.0
+    await handler.execute_with_lock(ruark.play)
+    clock[0] += 30.0
+    await handler.execute_with_lock(ruark.play)
+
+    assert journal == [
+        "   0.0 ruark.play() !RuarkDeviceNotFoundError",
+        "   0.0 ruark.reconnect() -> True",
+        "   0.0 sleep(1)",
+        "   1.0 ruark.play()",
+        "  11.0 ruark.play() !RuarkDeviceNotFoundError",
+        "  11.0 sleep(1)",
+        "  12.0 ruark.play()",
+        "  42.0 ruark.play() !RuarkDeviceNotFoundError",
+        "  42.0 ruark.reconnect() -> True",
+        "  42.0 sleep(1)",
+        "  43.0 ruark.play()",
+    ]
+
+
+async def test_timeline_attach_gives_up_after_three_attempts(monkeypatch):
+    handler, ruark, clock = make_timeline_handler(monkeypatch)
+    ruark.set_av_transport_uri.side_effect = RuarkDeviceNotFoundError(
+        "нет устройства"
+    )
+    ruark.reconnect.return_value = False
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    with pytest.raises(RuarkDeviceNotFoundError):
+        await handler.play_stream("http://example/track", Codec.MP3)
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://example/track', radio=False)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Internet Radio', artist='', mime_type='audio/mpeg') !RuarkDeviceNotFoundError",
+        "   0.0 ruark.reconnect() -> False",
+        "   0.0 sleep(1)",
+        "   1.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Internet Radio', artist='', mime_type='audio/mpeg') !RuarkDeviceNotFoundError",
+        "   1.0 sleep(1)",
+        "   2.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Internet Radio', artist='', mime_type='audio/mpeg') !RuarkDeviceNotFoundError",
+        "   2.0 ffmpeg.stop()",
+    ]
+
+
+async def test_timeline_play_failure_retries_only_play(monkeypatch):
+    handler, ruark, clock = make_timeline_handler(monkeypatch)
+    ruark.play.side_effect = [SOAPError("UPnP 501"), None]
+    ruark.reconnect.return_value = True
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+
+    await handler.play_stream("http://example/track", Codec.MP3, title="Т")
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://example/track', radio=False)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Т', artist='', mime_type='audio/mpeg')",
+        "   0.0 ruark.play() !SOAPError",
+        "   0.0 ruark.reconnect() -> True",
+        "   0.0 sleep(1)",
+        "   1.0 ruark.play()",
+    ]
+
+
+async def test_timeline_ffmpeg_restart_reattaches_with_saved_metadata(
+    monkeypatch,
+):
+    handler, _, clock = make_timeline_handler(monkeypatch)
+    journal = record_handler_timeline(monkeypatch, handler, clock)
+    await handler.play_stream(
+        "http://example/track.flac",
+        Codec.FLAC,
+        title="Песня",
+        artist="Артист",
+    )
+
+    # Так супервизор зовёт обработчик после перезапуска FFmpeg
+    await handler._reattach_ruark(False)
+
+    assert journal == [
+        "   0.0 ffmpeg.start('http://example/track.flac', radio=False)",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Песня', artist='Артист', mime_type='audio/flac')",
+        "   0.0 ruark.play()",
+        "   0.0 ruark.set_av_transport_uri('http://127.0.0.1:8080/live_stream.mp3?radio=false', title='Песня', artist='Артист', mime_type='audio/flac')",
+        "   0.0 ruark.play()",
+    ]
+
+
+async def test_timeline_dlna_start_finds_ruark_in_background(monkeypatch):
+    """Сервер стартует, не дожидаясь Ruark; при остановке поиск гасится.
+
+    Ruark мог спать при старте: поиск идёт в фоне, а привязку потока
+    потом восстановит execute_with_lock.
+    """
+    # Импорт модуля сервиса настраивает логи процесса: в тестах не нужно
+    monkeypatch.setattr(
+        "core.logging.setup.setup_logging", lambda *args, **kwargs: None
+    )
+    dlna_main = importlib.import_module("dlna_stream_server.main")
+    handler, ruark, clock = make_timeline_handler(monkeypatch)
+    search_cancelled = asyncio.Event()
+
+    async def endless_search():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            search_cancelled.set()
+            raise
+
+    ruark.connect.side_effect = endless_search
+    objects = {StreamHandler: handler, RuarkR5Controller: ruark}
+    container = MagicMock(spec=Injector)
+    container.get.side_effect = objects.__getitem__
+    monkeypatch.setattr(
+        dlna_main,
+        "MainDIContainer",
+        lambda: SimpleNamespace(get_container=lambda: container),
+    )
+    timeline = Timeline(clock)
+    timeline.spy(ruark, {"connect": "ruark.connect"})
+    timeline.spy(handler, {"stop_ffmpeg": "handler.stop_ffmpeg"})
+    timeline.spy(handler._ffmpeg, {"stop": "ffmpeg.stop"})
+    journal = timeline.entries
+    app = FastAPI()
+
+    lifespan = dlna_main.lifespan(app)
+    # Старт, ждущий Ruark, упал бы здесь по таймауту, а не повис
+    await asyncio.wait_for(lifespan.__aenter__(), timeout=1.0)
+    await REAL_SLEEP(0)
+    assert app.state.stream_handler is handler
+    assert journal == ["   0.0 ruark.connect()"]
+
+    await lifespan.__aexit__(None, None, None)
+    await REAL_SLEEP(0)
+    assert search_cancelled.is_set()
+    assert journal == [
+        "   0.0 ruark.connect()",
+        "   0.0 handler.stop_ffmpeg()",
+        "   0.0 ffmpeg.stop()",
+    ]
