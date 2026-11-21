@@ -5,7 +5,7 @@ description = "Стриминг музыки с Яндекс Станции на
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp==3.14.5",
-    "fastapi==0.163.1",
+    "fastapi==0.164.0",
     "injector==0.24.0",
     "pydantic==2.14.3",
     "pydantic-settings==2.16.3",
